@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BKTM Auto - Block-Programmierung</title>
+    <style>
+        body {
+            margin: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+
+        .header {
+            background-color: rgba(255, 255, 255, 0.95);
+            padding: 15px 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header h1 {
+            margin: 0;
+            color: #333;
+            font-size: 24px;
+            padding-left: 40px;
+            position: relative;
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .connection-status {
+            padding: 8px 15px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: bold;
+            min-width: 150px;
+            text-align: center;
+        }
+
+        .connected {
+            background-color: #4CAF50;
+            color: white;
+        }
+
+        .disconnected {
+            background-color: #f44336;
+            color: white;
+        }
+
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-weight: bold;
+        }
+
+        .btn-primary {
+            background-color: #4CAF50;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background-color: #45a049;
+        }
+
+        .btn-danger {
+            background-color: #f44336;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background-color: #da190b;
+        }
+
+        .btn-warning {
+            background-color: #ff9800;
+            color: white;
+        }
+
+        .btn-warning:hover {
+            background-color: #e68900;
+        }
+
+        .btn-info {
+            background-color: #2196F3;
+            color: white;
+        }
+
+        .btn-info:hover {
+            background-color: #0b7dda;
+        }
+
+        .main-container {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        #blocklyDiv {
+            flex: 1;
+            background-color: white;
+            margin: 10px;
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+        }
+
+        .console-panel {
+            width: 350px;
+            background-color: rgba(255, 255, 255, 0.95);
+            margin: 10px 10px 10px 0;
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            display: flex;
+            flex-direction: column;
+            padding: 15px;
+        }
+
+        .console-panel h3 {
+            margin: 0 0 10px 0;
+            color: #333;
+        }
+
+        #console {
+            flex: 1;
+            background-color: #1e1e1e;
+            color: #00ff00;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            padding: 10px;
+            border-radius: 5px;
+            overflow-y: auto;
+        }
+
+        .esp-input {
+            margin-top: 10px;
+            display: flex;
+            gap: 5px;
+        }
+
+        .esp-input input {
+            flex: 1;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+
+        .esp-input button {
+            padding: 8px 15px;
+            font-size: 14px;
+        }
+
+        .connection-info {
+            background: #2c3e50;
+            color: #ecf0f1;
+            padding: 10px;
+            margin-top: 10px;
+            border-radius: 5px;
+            font-size: 12px;
+        }
+
+        .connection-info strong {
+            display: block;
+            margin-bottom: 5px;
+            color: #3498db;
+        }
+
+        .connection-info .status-line {
+            margin: 3px 0;
+        }
+
+        .connection-controls {
+            display: flex;
+            gap: 5px;
+            margin-top: 8px;
+        }
+
+        .connection-controls button {
+            flex: 1;
+            padding: 5px 10px;
+            font-size: 12px;
+        }
+
+        .bktm-logo {
+            font-weight: bold;
+            color: #0066cc;
+            font-size: 20px;
+            margin-right: 15px;
+            display: inline-block;
+            position: relative;
+        }
+
+        .bktm-logo::before {
+            content: '';
+            position: absolute;
+            left: -35px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 28px;
+            height: 28px;
+            background: #0066cc;
+            border-radius: 3px;
+        }
+
+        .bktm-logo::after {
+            content: '';
+            position: absolute;
+            left: -28px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 14px;
+            height: 14px;
+            background: #ffcc00;
+            border-radius: 2px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1><span class="bktm-logo">Berufskolleg für Technik</span> Auto Programmierung</h1>
+        <div class="controls">
+            <input type="text" id="espIP" placeholder="ESP32 IP (z.B. 192.168.4.1)" style="padding: 8px; border-radius: 5px; border: 1px solid #ddd;">
+            <button onclick="connectWebSocket()" class="btn-warning">Verbinden</button>
+            <span id="connectionStatus" class="connection-status disconnected">Getrennt</span>
+            <span id="batteryStatus" style="margin: 0 10px; font-size: 16px;">🔋 --%</span>
+            <button onclick="runCode()" class="btn-primary">▶ Code ausführen</button>
+            <button onclick="stopCode()" class="btn-danger">⏹ STOPP</button>
+        </div>
+    </div>
+
+    <div class="main-container">
+        <div id="blocklyDiv"></div>
+        <div class="console-panel">
+            <h3>Konsolen-Ausgabe</h3>
+            <div id="console">Bereit zur Verbindung mit Roboter...</div>
+            <div class="esp-input">
+                <input type="text" id="commandInput" placeholder="Manueller Befehl... (M L R oder S Winkel)">
+                <button onclick="sendManualCommand()" class="btn-primary">Senden</button>
+            </div>
+            <div class="connection-info">
+                <strong>🌐 Verbindungsstatus:</strong>
+                <div class="status-line">• Auto-Reconnect: Aktiv</div>
+                <div class="status-line">• Max. Versuche: 20</div>
+                <div class="status-line">• Heartbeat: Alle 8 Sekunden</div>
+                <div class="connection-controls">
+                    <button onclick="manualReconnect()" class="btn-info">🔄 Neu verbinden</button>
+                    <button onclick="clearConsole()" class="btn-warning">📃 Konsole löschen</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Blockly Scripts -->
+    <script src="lib/blockly.min.js"></script>
+    <script src="blockly-robot.js"></script>
+    <script src="app.js"></script>
+
+    <script>
+        // Zusätzliche Hilfsfunktion zum Löschen der Konsole
+        function clearConsole() {
+            const consoleDiv = document.getElementById('console');
+            consoleDiv.innerHTML = '';
+            addToConsole('Konsole gelöscht', 'info');
+        }
+    </script>
+</body>
+</html>
