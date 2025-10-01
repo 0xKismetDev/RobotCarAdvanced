@@ -80,14 +80,14 @@ For camera streaming, connect an ESP32-CAM module:
 
 Note: ESP32_Master first tries to connect to ESP32-CAM network. If not found, it creates its own AP (`RobotCar-AP`)
 
-### 3. ESP32-CAM Streaming (Optional)
+### 2.1. ESP32-CAM Streaming (Optional)
 
 #### Setup:
 1. Upload `ESP32_Camera/ESP32_CAM_Stream.ino` to ESP32-CAM
 2. Configure WiFi credentials in code
 3. Access stream at `http://[ESP32-CAM-IP]/stream`
 
-### 4. Mobile Control App
+### 2.2. Mobile Control App
 
 #### Requirements:
 - Flutter SDK 3.0+
