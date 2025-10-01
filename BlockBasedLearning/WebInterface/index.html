@@ -231,7 +231,8 @@
         <h1><span class="bktm-logo">Berufskolleg für Technik</span> Auto Programmierung</h1>
         <div class="controls">
             <input type="text" id="espIP" placeholder="ESP32 IP (z.B. 192.168.4.1)" style="padding: 8px; border-radius: 5px; border: 1px solid #ddd;">
-            <button onclick="connectWebSocket()" class="btn-warning">Verbinden</button>
+            <button id="connectBtn" onclick="connectWebSocket()" class="btn-warning">Verbinden</button>
+            <button id="disconnectBtn" onclick="disconnectWebSocket()" class="btn-danger" style="display: none;">Trennen</button>
             <span id="connectionStatus" class="connection-status disconnected">Getrennt</span>
             <span id="batteryStatus" style="margin: 0 10px; font-size: 16px;">🔋 --%</span>
             <button onclick="runCode()" class="btn-primary">▶ Code ausführen</button>

@@ -102,11 +102,23 @@ function connectWebSocket(autoReconnect = false) {
         return;
     }
 
-    if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) {
-        if (!autoReconnect) {
-            addToConsole('Bereits verbunden oder Verbindung wird aufgebaut...', 'warning');
+    // force close existing connection if any
+    if (ws) {
+        if (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN) {
+            if (!autoReconnect) {
+                addToConsole('Schließe bestehende Verbindung...', 'info');
+            }
+            try {
+                // prevent triggering onclose handlers
+                ws.onclose = null;
+                ws.onerror = null;
+                ws.onmessage = null;
+                ws.close();
+            } catch (e) {
+                console.error('Error closing WebSocket:', e);
+            }
         }
-        return;
+        ws = null;
     }
 
     lastConnectedIP = ip;
@@ -201,6 +213,8 @@ function scheduleReconnect() {
     updateConnectionStatus(false, `Wartet ${seconds}s auf Wiederverbindung`);
 
     reconnectTimer = setTimeout(() => {
+        // Reset stopRequested for auto-reconnect
+        stopRequested = false;
         connectWebSocket(true);
     }, delay);
 }
@@ -213,20 +227,28 @@ function startHeartbeat() {
 
     heartbeatInterval = setInterval(() => {
         if (ws && ws.readyState === WebSocket.OPEN) {
-// check heartbeat timeout
-            const heartbeatTimeout = isExecutingCode ? 30000 : 20000;
+            // more aggressive timeout for better dead connection detection
+            const heartbeatTimeout = isExecutingCode ? 15000 : 10000;
 
             if (Date.now() - lastHeartbeat > heartbeatTimeout) {
-                addToConsole('⚠️ Keine Antwort vom Roboter - Verbindung prüfen...', 'warning');
-                ws.close();
+                addToConsole('⚠️ Keine Antwort vom Roboter - Verbindung unterbrochen', 'warning');
+                // force close to trigger reconnect
+                if (ws) {
+                    ws.close();
+                }
                 return;
             }
 
-            if (!isExecutingCode || Date.now() - lastHeartbeat > 3000) {
-                sendCommand({ type: 'ping' }, false);
+            // send ping more frequently
+            if (!isExecutingCode || Date.now() - lastHeartbeat > 2000) {
+                try {
+                    sendCommand({ type: 'ping' }, false);
+                } catch (e) {
+                    console.error('Error sending ping:', e);
+                }
             }
         }
-    }, 8000);
+    }, 2000); // check more frequently (every 2 seconds)
 }
 
 function stopHeartbeat() {
@@ -342,6 +364,9 @@ function updateBatteryDisplay(percent) {
 
 function updateConnectionStatus(connected, customMessage = null) {
     const status = document.getElementById('connectionStatus');
+    const connectBtn = document.getElementById('connectBtn');
+    const disconnectBtn = document.getElementById('disconnectBtn');
+
     if (customMessage) {
         status.textContent = customMessage;
         status.className = 'connection-status ' + (connected ? 'connected' : 'disconnected');
@@ -351,6 +376,17 @@ function updateConnectionStatus(connected, customMessage = null) {
     } else {
         status.className = 'connection-status disconnected';
         status.textContent = 'Getrennt';
+    }
+
+    // Toggle button visibility based on connection state
+    if (connectBtn && disconnectBtn) {
+        if (connected) {
+            connectBtn.style.display = 'none';
+            disconnectBtn.style.display = 'inline-block';
+        } else {
+            connectBtn.style.display = 'inline-block';
+            disconnectBtn.style.display = 'none';
+        }
     }
 }
 
@@ -489,85 +525,33 @@ async function turnDegrees(direction, degrees, speed) {
         throw new Error('Nicht verbunden');
     }
 
-    // improved calibration with inertia compensation
-    // based on typical az delivery robot car specs:
-    // - wheelbase ~15cm
-    // - dc motors ~100-200 rpm
-    // - weight ~500g
-    // - 2s lipo battery (7.4v nominal)
-
+    // simplified calibration - direct mapping without complex physics
+    // adjust these values based on your robot's actual behavior
     const TURN_CALIBRATION = {
-        // format: speed -> { degreesPerSec, accelTime, decelTime, inertiaComp }
-        100: {
-            degreesPerSec: 90,   // actual turning rate at steady state
-            accelTime: 150,      // ms to reach target speed
-            decelTime: 100,      // ms to stop from target speed
-            inertiaComp: 8       // degrees of overshoot due to inertia
-        },
-        150: {
-            degreesPerSec: 135,
-            accelTime: 200,
-            decelTime: 150,
-            inertiaComp: 12
-        },
-        200: {
-            degreesPerSec: 180,
-            accelTime: 250,
-            decelTime: 200,
-            inertiaComp: 18
-        },
-        255: {
-            degreesPerSec: 220,
-            accelTime: 300,
-            decelTime: 250,
-            inertiaComp: 25
-        }
+        // speed -> milliseconds per degree (simplified approach)
+        100: 3.5,  // ms per degree at speed 100
+        150: 2.3,  // ms per degree at speed 150
+        200: 1.7,  // ms per degree at speed 200
+        255: 1.4   // ms per degree at speed 255
     };
 
     // get calibration for closest speed
-    let calibration;
     const speeds = Object.keys(TURN_CALIBRATION).map(Number).sort((a, b) => a - b);
     const closestSpeed = speeds.reduce((prev, curr) =>
         Math.abs(curr - speed) < Math.abs(prev - speed) ? curr : prev
     );
-    calibration = TURN_CALIBRATION[closestSpeed];
+    const msPerDegree = TURN_CALIBRATION[closestSpeed];
 
-    // calculate actual degrees needed (compensating for inertia)
-    const targetDegrees = Math.max(0, degrees - calibration.inertiaComp);
+    // simple duration calculation
+    const duration = Math.round(degrees * msPerDegree);
 
-    // calculate turn duration
-    const steadyStateTime = (targetDegrees / calibration.degreesPerSec) * 1000;
-    const totalDuration = steadyStateTime + calibration.accelTime;
+    // debug output
+    console.log(`Turn Debug: ${degrees}° turn at speed ${speed}`);
+    console.log(`  - Using speed ${closestSpeed} calibration`);
+    console.log(`  - Ms per degree: ${msPerDegree}`);
+    console.log(`  - Total duration: ${duration}ms`);
 
-    // for very small turns, use pulse mode
-    if (degrees <= 30) {
-        const pulseDuration = Math.round((degrees / calibration.degreesPerSec) * 1000 * 0.8);
-
-        let leftSpeed, rightSpeed;
-        if (direction === 'left') {
-            leftSpeed = Math.round(-speed * MOTOR_CALIBRATION.leftMultiplier);
-            rightSpeed = Math.round(speed * MOTOR_CALIBRATION.rightMultiplier);
-        } else {
-            leftSpeed = Math.round(speed * MOTOR_CALIBRATION.leftMultiplier);
-            rightSpeed = Math.round(-speed * MOTOR_CALIBRATION.rightMultiplier);
-        }
-
-        const command = {
-            type: 'command',
-            action: 'differential',
-            leftSpeed: leftSpeed,
-            rightSpeed: rightSpeed
-        };
-
-        await sendCommandWithRateLimit(command);
-        await wait(pulseDuration);
-        await stopRobot();
-
-        addToConsole(`🔄 Drehe ${direction === 'left' ? 'links' : 'rechts'} ${degrees}° (Impuls: ${pulseDuration}ms)`);
-        return;
-    }
-
-    // for larger turns, use normal mode with inertia compensation
+    // set motor speeds
     let leftSpeed, rightSpeed;
     if (direction === 'left') {
         leftSpeed = Math.round(-speed * MOTOR_CALIBRATION.leftMultiplier);
@@ -588,9 +572,9 @@ async function turnDegrees(direction, degrees, speed) {
     await sendCommandWithRateLimit(command);
 
     const commandDelay = Date.now() - commandSentTime;
-    const actualDuration = Math.max(0, totalDuration - commandDelay);
+    const actualDuration = Math.max(0, duration - commandDelay);
 
-    addToConsole(`🔄 Drehe ${direction === 'left' ? 'links' : 'rechts'} ${degrees}° für ${Math.round(totalDuration)}ms (mit Trägheitskompensation)`);
+    addToConsole(`🔄 Drehe ${direction === 'left' ? 'links' : 'rechts'} ${degrees}° für ${duration}ms`);
 
     const startTime = Date.now();
 
@@ -782,9 +766,10 @@ async function calibrateTurning(testSpeed = 150) {
 
     addToConsole('\n=== ✅ KALIBRIERUNG ABGESCHLOSSEN ===', 'success');
     addToConsole('📝 Kalibrierungshinweise:');
-    addToConsole('- Dreht zu weit: Erhöhe "inertiaComp" Wert');
-    addToConsole('- Dreht zu wenig: Verringere "inertiaComp" oder erhöhe "degreesPerSec"');
-    addToConsole('- Passe die Werte in TURN_CALIBRATION an (Zeile 498)');
+    addToConsole('- Dreht zu weit: Verringere ms/degree Wert');
+    addToConsole('- Dreht zu wenig: Erhöhe ms/degree Wert');
+    addToConsole('- Passe die Werte in TURN_CALIBRATION an (Zeile 494-499)');
+    addToConsole('- Aktuelle Werte: 100->3.5ms, 150->2.3ms, 200->1.7ms, 255->1.4ms');
 }
 
 function print(text) {
@@ -1089,12 +1074,99 @@ window.addEventListener('beforeunload', function() {
     }
 });
 
-// Manueller Reconnect-Button
-function manualReconnect() {
-    stopRequested = false;
-    reconnectAttempts = 0;
+// Disconnect function to properly clean up connection
+function disconnectWebSocket() {
+    stopRequested = true; // prevent auto-reconnect
+
+    // Clear any pending reconnect timers
     if (reconnectTimer) {
         clearTimeout(reconnectTimer);
+        reconnectTimer = null;
     }
-    connectWebSocket(false);
+
+    // Stop heartbeat
+    stopHeartbeat();
+
+    // Close WebSocket if open
+    if (ws) {
+        try {
+            // Remove handlers to prevent triggering reconnect
+            ws.onclose = null;
+            ws.onerror = null;
+            ws.onmessage = null;
+            ws.onopen = null;
+
+            if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+                ws.close(1000, 'User requested disconnect');
+            }
+        } catch (e) {
+            console.error('Error closing WebSocket:', e);
+        }
+        ws = null;
+    }
+
+    // Clear command queue
+    commandQueue = [];
+    pendingCommands.clear();
+
+    // Update UI
+    updateConnectionStatus(false, 'Getrennt');
+    addToConsole('📴 Verbindung getrennt', 'info');
+
+    // Reset connection state
+    isReconnecting = false;
+    connectionLost = false;
+    reconnectAttempts = 0;
 }
+
+// Manual reconnect button
+function manualReconnect() {
+    // First ensure clean disconnection
+    disconnectWebSocket();
+
+    // Reset reconnect state
+    stopRequested = false;
+    reconnectAttempts = 0;
+    reconnectDelay = 1000;
+
+    // Small delay to ensure clean state
+    setTimeout(() => {
+        connectWebSocket(false);
+    }, 100);
+}
+
+// Page Visibility Handler - detect when user leaves/returns to page
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+        // Page is hidden (user switched tabs or minimized browser)
+        console.log('Page hidden - may affect WebSocket connection');
+    } else {
+        // Page is visible again
+        console.log('Page visible again - checking connection');
+
+        // If we had an active connection, check if it's still alive
+        if (ws && ws.readyState === WebSocket.OPEN && !stopRequested) {
+            // Send a ping to check if connection is still alive
+            try {
+                sendCommand({ type: 'ping' }, false);
+            } catch (e) {
+                console.log('Connection check failed, may need reconnection');
+            }
+        } else if (!ws && lastConnectedIP && !stopRequested && !isReconnecting) {
+            // If we lost connection while page was hidden, try to reconnect
+            addToConsole('🔄 Seite wieder aktiv - versuche Wiederverbindung...', 'info');
+            connectWebSocket(true);
+        }
+    }
+});
+
+// Handle browser refresh/close - try to cleanly close WebSocket
+window.addEventListener('beforeunload', () => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        try {
+            ws.close(1000, 'Page unloading');
+        } catch (e) {
+            // Ignore errors during page unload
+        }
+    }
+});

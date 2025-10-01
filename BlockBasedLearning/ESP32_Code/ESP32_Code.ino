@@ -26,6 +26,9 @@ bool clientConnected = false;
 bool arduinoConnected = false;
 unsigned long lastPing = 0;
 unsigned long lastSensorRequest = 0;
+unsigned long lastClientActivity = 0;
+const unsigned long CLIENT_TIMEOUT = 15000; // 15 seconds timeout
+uint8_t connectedClientNum = 255; // track which client number is connected
 
 // current sensor values
 int currentDistance = 0;
@@ -68,6 +71,17 @@ void loop() {
 
   // update status led
   updateLED();
+
+  // check for client timeout (stale connections)
+  if (clientConnected && millis() - lastClientActivity > CLIENT_TIMEOUT) {
+    Serial.println("Client timeout - disconnecting stale connection");
+    if (connectedClientNum != 255) {
+      webSocket.disconnect(connectedClientNum);
+    }
+    clientConnected = false;
+    connectedClientNum = 255;
+    sendToArduino("M 0 0"); // stop motors for safety
+  }
 
   // request sensor data from arduino periodically
   if (millis() - lastSensorRequest > 100) {
@@ -114,16 +128,28 @@ void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t leng
   switch(type) {
     case WStype_DISCONNECTED:
       Serial.printf("[%u] Client disconnected\n", num);
-      clientConnected = false;
-      // stop motors when client disconnects
-      sendToArduino("M 0 0");
+      if (num == connectedClientNum) {
+        clientConnected = false;
+        connectedClientNum = 255;
+        // stop motors when client disconnects
+        sendToArduino("M 0 0");
+      }
       break;
 
     case WStype_CONNECTED:
       {
         IPAddress ip = webSocket.remoteIP(num);
         Serial.printf("[%u] Client connected from %s\n", num, ip.toString().c_str());
+
+        // if there's already a connected client, disconnect it
+        if (clientConnected && connectedClientNum != 255 && connectedClientNum != num) {
+          Serial.printf("Disconnecting old client [%u]\n", connectedClientNum);
+          webSocket.disconnect(connectedClientNum);
+        }
+
         clientConnected = true;
+        connectedClientNum = num;
+        lastClientActivity = millis();
 
         // send initial status
         sendStatus(num);
@@ -131,6 +157,9 @@ void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t leng
       break;
 
     case WStype_TEXT:
+      if (num == connectedClientNum) {
+        lastClientActivity = millis();
+      }
       handleCommand(num, (char*)payload);
       break;
   }
