@@ -34,10 +34,13 @@ Servo cameraServo;
 int leftSpeed = 0;
 int rightSpeed = 0;
 int servoAngle = 90;
+int lastServoAngle = 90;  // track last written angle
 int distance = 0;
 float batteryVoltage = 0.0;
 int batteryPercent = 0;
 String motorStatus = "STOPPED";
+unsigned long lastServoMove = 0;
+const unsigned long SERVO_DETACH_TIMEOUT = 2000; // detach servo after 2s of inactivity
 
 char cmdBuffer[32];
 int cmdIndex = 0;
@@ -70,6 +73,8 @@ void setup() {
 
   cameraServo.attach(SERVO_PIN);
   cameraServo.write(servoAngle);
+  lastServoAngle = servoAngle;
+  lastServoMove = millis();
 
   pinMode(BATTERY_PIN, INPUT);
 
@@ -102,6 +107,12 @@ void loop() {
   if (!newCmd && millis() - lastBatteryRead > BATTERY_INTERVAL) {
     readBatteryVoltage();
     lastBatteryRead = millis();
+  }
+
+  // detach servo after timeout to prevent twitching and save power
+  if (cameraServo.attached() && (millis() - lastServoMove > SERVO_DETACH_TIMEOUT)) {
+    cameraServo.detach();
+    Serial.println("servo: detached (idle)");
   }
 }
 
@@ -170,11 +181,26 @@ void processCommand() {
     }
   }
   else if (cmd.startsWith("S ")) {
-    servoAngle = cmd.substring(2).toInt();
-    servoAngle = constrain(servoAngle, 0, 180);
-    cameraServo.write(servoAngle);
-    Serial.print("servo: ");
-    Serial.println(servoAngle);
+    int newAngle = cmd.substring(2).toInt();
+    newAngle = constrain(newAngle, 0, 180);
+
+    // only update servo if angle changed by more than 1 degree (deadband)
+    if (abs(newAngle - lastServoAngle) > 1) {
+      servoAngle = newAngle;
+
+      // attach servo if it was detached
+      if (!cameraServo.attached()) {
+        cameraServo.attach(SERVO_PIN);
+        delay(15); // small delay for servo to initialize
+      }
+
+      cameraServo.write(servoAngle);
+      lastServoAngle = servoAngle;
+      lastServoMove = millis();
+
+      Serial.print("servo: ");
+      Serial.println(servoAngle);
+    }
   }
   else if (cmd == "SCAN") {
     performScan();
@@ -255,8 +281,15 @@ void readDistance() {
 void performScan() {
   Serial.println("scanning...");
 
+  // ensure servo is attached for scan
+  if (!cameraServo.attached()) {
+    cameraServo.attach(SERVO_PIN);
+    delay(15);
+  }
+
   for (int angle = 0; angle <= 180; angle += 30) {
     cameraServo.write(angle);
+    lastServoMove = millis();
     delay(200);
     readDistance();
 
@@ -266,8 +299,11 @@ void performScan() {
     Serial.println("cm");
   }
 
+  // return to center
   servoAngle = 90;
   cameraServo.write(servoAngle);
+  lastServoAngle = servoAngle;
+  lastServoMove = millis();
 }
 
 void readBatteryVoltage() {

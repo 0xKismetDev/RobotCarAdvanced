@@ -61,8 +61,8 @@ For camera streaming, connect an ESP32-CAM module:
 - Python 3.6+
 
 #### Setup:
-1. Upload `Arduino_Slave/Arduino_RobotCar_I2C_Slave.ino` to Arduino UNO
-2. Upload `BlockBasedLearning/ESP32_Code/BlocklyRobotCar_ESP32.ino` to ESP32
+1. Upload `Arduino_Slave/Arduino_Slave.ino` to Arduino UNO
+2. Upload `BlockBasedLearning/ESP32_Code/ESP32_Code.ino` to ESP32
 3. Start web interface:
    ```bash
    cd BlockBasedLearning/WebInterface
@@ -74,8 +74,8 @@ For camera streaming, connect an ESP32-CAM module:
 ### 2. ESP32 WebSocket Control
 
 #### Setup:
-1. Upload `ESP32_Master/ESP32_RobotCar_WebSocket_Server.ino` to ESP32
-2. Upload `Arduino_Slave/Arduino_RobotCar_I2C_Slave.ino` to Arduino
+1. Upload `ESP32_Master/ESP32_Master.ino` to ESP32
+2. Upload `Arduino_Slave/Arduino_Slave.ino` to Arduino
 3. Connect via WebSocket to `ws://192.168.4.1:81`
 
 Note: ESP32_Master first tries to connect to ESP32-CAM network. If not found, it creates its own AP (`RobotCar-AP`)
@@ -83,7 +83,7 @@ Note: ESP32_Master first tries to connect to ESP32-CAM network. If not found, it
 ### 2.1. ESP32-CAM Streaming (Optional)
 
 #### Setup:
-1. Upload `ESP32_Camera/ESP32_CAM_Stream.ino` to ESP32-CAM
+1. Upload `ESP32_Camera/ESP32_Camera.ino` to ESP32-CAM
 2. Configure WiFi credentials in code
 3. Access stream at `http://[ESP32-CAM-IP]/stream`
 
