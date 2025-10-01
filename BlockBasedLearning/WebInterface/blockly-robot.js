@@ -141,6 +141,24 @@ function defineRobotBlocks() {
         }
     };
 
+    Blockly.Blocks['robot_calibrate_turns'] = {
+        init: function() {
+            this.appendDummyInput()
+                .appendField("🎯 Kalibriere Drehungen")
+                .appendField("Geschwindigkeit:")
+                .appendField(new Blockly.FieldDropdown([
+                    ["100", "100"],
+                    ["150", "150"],
+                    ["200", "200"]
+                ]), "SPEED");
+            this.setPreviousStatement(true, null);
+            this.setNextStatement(true, null);
+            this.setColour(290);
+            this.setTooltip("Führt eine Kalibrierungsroutine für präzise Drehungen aus");
+            this.setHelpUrl("");
+        }
+    };
+
     Blockly.Blocks['robot_if_obstacle'] = {
         init: function() {
             this.appendDummyInput()
@@ -357,6 +375,11 @@ function defineRobotGenerators() {
 
     window.RobotGenerators['robot_find_best_direction'] = function(block) {
         return ['(await findBestDirection())', 0];
+    };
+
+    window.RobotGenerators['robot_calibrate_turns'] = function(block) {
+        const speed = block.getFieldValue('SPEED');
+        return 'await calibrateTurning(' + speed + ');\n';
     };
 }
 
