@@ -32,7 +32,8 @@ function initBlockly() {
                     {"kind": "block", "type": "robot_move_forward"},
                     {"kind": "block", "type": "robot_move_backward"},
                     {"kind": "block", "type": "robot_turn_degrees"},
-                    {"kind": "block", "type": "robot_stop"}
+                    {"kind": "block", "type": "robot_stop"},
+                    {"kind": "block", "type": "robot_calibrate_turns"}
                 ]
             },
             {
@@ -488,16 +489,85 @@ async function turnDegrees(direction, degrees, speed) {
         throw new Error('Nicht verbunden');
     }
 
-    // degrees per second calibration
+    // improved calibration with inertia compensation
+    // based on typical az delivery robot car specs:
+    // - wheelbase ~15cm
+    // - dc motors ~100-200 rpm
+    // - weight ~500g
+    // - 2s lipo battery (7.4v nominal)
+
     const TURN_CALIBRATION = {
-        100: 35,
-        150: 50,
-        200: 65
+        // format: speed -> { degreesPerSec, accelTime, decelTime, inertiaComp }
+        100: {
+            degreesPerSec: 90,   // actual turning rate at steady state
+            accelTime: 150,      // ms to reach target speed
+            decelTime: 100,      // ms to stop from target speed
+            inertiaComp: 8       // degrees of overshoot due to inertia
+        },
+        150: {
+            degreesPerSec: 135,
+            accelTime: 200,
+            decelTime: 150,
+            inertiaComp: 12
+        },
+        200: {
+            degreesPerSec: 180,
+            accelTime: 250,
+            decelTime: 200,
+            inertiaComp: 18
+        },
+        255: {
+            degreesPerSec: 220,
+            accelTime: 300,
+            decelTime: 250,
+            inertiaComp: 25
+        }
     };
 
-    const degreesPerSecond = TURN_CALIBRATION[speed] || 50;
-    const duration = Math.round((degrees / degreesPerSecond) * 1000);
+    // get calibration for closest speed
+    let calibration;
+    const speeds = Object.keys(TURN_CALIBRATION).map(Number).sort((a, b) => a - b);
+    const closestSpeed = speeds.reduce((prev, curr) =>
+        Math.abs(curr - speed) < Math.abs(prev - speed) ? curr : prev
+    );
+    calibration = TURN_CALIBRATION[closestSpeed];
 
+    // calculate actual degrees needed (compensating for inertia)
+    const targetDegrees = Math.max(0, degrees - calibration.inertiaComp);
+
+    // calculate turn duration
+    const steadyStateTime = (targetDegrees / calibration.degreesPerSec) * 1000;
+    const totalDuration = steadyStateTime + calibration.accelTime;
+
+    // for very small turns, use pulse mode
+    if (degrees <= 30) {
+        const pulseDuration = Math.round((degrees / calibration.degreesPerSec) * 1000 * 0.8);
+
+        let leftSpeed, rightSpeed;
+        if (direction === 'left') {
+            leftSpeed = Math.round(-speed * MOTOR_CALIBRATION.leftMultiplier);
+            rightSpeed = Math.round(speed * MOTOR_CALIBRATION.rightMultiplier);
+        } else {
+            leftSpeed = Math.round(speed * MOTOR_CALIBRATION.leftMultiplier);
+            rightSpeed = Math.round(-speed * MOTOR_CALIBRATION.rightMultiplier);
+        }
+
+        const command = {
+            type: 'command',
+            action: 'differential',
+            leftSpeed: leftSpeed,
+            rightSpeed: rightSpeed
+        };
+
+        await sendCommandWithRateLimit(command);
+        await wait(pulseDuration);
+        await stopRobot();
+
+        addToConsole(`🔄 Drehe ${direction === 'left' ? 'links' : 'rechts'} ${degrees}° (Impuls: ${pulseDuration}ms)`);
+        return;
+    }
+
+    // for larger turns, use normal mode with inertia compensation
     let leftSpeed, rightSpeed;
     if (direction === 'left') {
         leftSpeed = Math.round(-speed * MOTOR_CALIBRATION.leftMultiplier);
@@ -518,9 +588,9 @@ async function turnDegrees(direction, degrees, speed) {
     await sendCommandWithRateLimit(command);
 
     const commandDelay = Date.now() - commandSentTime;
-    const actualDuration = Math.max(0, duration - commandDelay);
+    const actualDuration = Math.max(0, totalDuration - commandDelay);
 
-    addToConsole(`🔄 Drehe ${direction === 'left' ? 'links' : 'rechts'} ${degrees}° für ${duration}ms`);
+    addToConsole(`🔄 Drehe ${direction === 'left' ? 'links' : 'rechts'} ${degrees}° für ${Math.round(totalDuration)}ms (mit Trägheitskompensation)`);
 
     const startTime = Date.now();
 
@@ -675,6 +745,46 @@ async function findBestDirection() {
         addToConsole(`❌ Fehler bei Richtungssuche: ${error.message}`, 'error');
         return 'geradeaus';
     }
+}
+
+// calibration routine for precise turning
+async function calibrateTurning(testSpeed = 150) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        addToConsole('Nicht mit Roboter verbunden!', 'error');
+        return;
+    }
+
+    addToConsole('=== 🎯 DREHKALIBRIERUNG START ===', 'success');
+    addToConsole('1. Platziere den Roboter auf einer ebenen Fläche');
+    addToConsole('2. Markiere die Startposition (z.B. mit Klebeband)');
+    addToConsole('3. Beobachte die tatsächlichen Drehwinkel');
+    await wait(3000);
+
+    const testAngles = [90, 180, 360];
+
+    for (let targetAngle of testAngles) {
+        addToConsole(`\n📐 Test: ${targetAngle}° Drehung bei Geschwindigkeit ${testSpeed}`);
+        addToConsole('Beobachte die tatsächliche Drehung...');
+        await wait(2000);
+
+        // perform test turn
+        await turnDegrees('right', targetAngle, testSpeed);
+        await wait(1000);
+
+        addToConsole(`Ziel: ${targetAngle}° - Notiere die tatsächliche Drehung`);
+        addToConsole('Der Roboter kehrt zur Startposition zurück in 5 Sekunden...');
+        await wait(5000);
+
+        // return to start position for next test
+        await turnDegrees('left', targetAngle, testSpeed);
+        await wait(2000);
+    }
+
+    addToConsole('\n=== ✅ KALIBRIERUNG ABGESCHLOSSEN ===', 'success');
+    addToConsole('📝 Kalibrierungshinweise:');
+    addToConsole('- Dreht zu weit: Erhöhe "inertiaComp" Wert');
+    addToConsole('- Dreht zu wenig: Verringere "inertiaComp" oder erhöhe "degreesPerSec"');
+    addToConsole('- Passe die Werte in TURN_CALIBRATION an (Zeile 498)');
 }
 
 function print(text) {
