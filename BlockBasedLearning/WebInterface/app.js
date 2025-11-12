@@ -2,8 +2,10 @@ let workspace;
 let ws = null;
 let stopRequested = false;
 let currentDistance = 0;
-let currentBattery = 100;
+let currentLeftEncoder = 0;
+let currentRightEncoder = 0;
 let currentServo = 90;
+let debugMode = false;
 
 let reconnectAttempts = 0;
 let maxReconnectAttempts = 20;
@@ -33,7 +35,8 @@ function initBlockly() {
                     {"kind": "block", "type": "robot_move_backward"},
                     {"kind": "block", "type": "robot_turn_degrees"},
                     {"kind": "block", "type": "robot_stop"},
-                    {"kind": "block", "type": "robot_calibrate_turns"}
+                    {"kind": "block", "type": "robot_reset_encoders"},
+                    {"kind": "block", "type": "robot_get_encoder"}
                 ]
             },
             {
@@ -314,13 +317,18 @@ function handleWebSocketMessage(data) {
 
     if (data.type === 'sensor_data') {
         currentDistance = data.distance || 0;
-        currentBattery = data.battery_percent || 0;
+        currentLeftEncoder = data.left_encoder || 0;
+        currentRightEncoder = data.right_encoder || 0;
         currentServo = data.servo_position || 90;
 
-        updateBatteryDisplay(currentBattery);
+        updateEncoderDisplay(currentLeftEncoder, currentRightEncoder);
 
         if (data.distance > 0 && Math.random() > 0.95) {
-            addToConsole(`📏 Abstand: ${data.distance}cm | 🔋 Batterie: ${currentBattery}%`);
+            if (debugMode) {
+                addToConsole(`📏 Abstand: ${data.distance}cm | 🎯 Encoder L:${currentLeftEncoder} R:${currentRightEncoder}`);
+            } else {
+                addToConsole(`📏 Abstand: ${data.distance}cm`);
+            }
         }
     } else if (data.type === 'command_ack') {
         if (data.id) {
@@ -344,22 +352,26 @@ function handleWebSocketMessage(data) {
     }
 }
 
-function updateBatteryDisplay(percent) {
-    const status = document.getElementById('batteryStatus');
+function updateEncoderDisplay(leftCount, rightCount) {
+    const status = document.getElementById('encoderStatus');
     if (!status) return;
 
-    let icon = '🔋';
-    let color = '#4CAF50';
+    status.style.display = 'inline';
 
-    if (percent <= 20) {
-        icon = '🪫';
-        color = '#f44336';
-    } else if (percent <= 50) {
-        icon = '🔋';
-        color = '#ff9800';
+    const leftMM = Math.round(leftCount * 9.72);
+    const rightMM = Math.round(rightCount * 9.72);
+
+    status.innerHTML = `<span style="color: #2196F3; font-weight: bold;">🎯 L:${leftCount} (${leftMM}mm) R:${rightCount} (${rightMM}mm)</span>`;
+}
+
+function toggleDebug() {
+    debugMode = !debugMode;
+
+    if (debugMode) {
+        addToConsole('🐛 Debug-Modus aktiviert', 'info');
+    } else {
+        addToConsole('🐛 Debug-Modus deaktiviert', 'info');
     }
-
-    status.innerHTML = `<span style="color: ${color}; font-weight: bold;">${icon} ${percent}%</span>`;
 }
 
 function updateConnectionStatus(connected, customMessage = null) {
@@ -390,9 +402,9 @@ function updateConnectionStatus(connected, customMessage = null) {
     }
 }
 
-// rate limiting
+// rate limiting - reduce to minimum
 let lastCommandTime = 0;
-const MIN_COMMAND_INTERVAL = 50;
+const MIN_COMMAND_INTERVAL = 10;  // Reduced from 50ms to 10ms
 let commandAckPromises = new Map();
 
 async function waitForCommandAck(commandId, timeout = 2000) {
@@ -420,9 +432,8 @@ async function sendCommandWithRateLimit(command) {
 
     const result = sendCommand(command, false);
     if (result) {
-        if (command.type === 'command' && typeof result === 'number') {
-            await waitForCommandAck(result, 1500);
-        }
+        // Don't wait for ACK on movement commands - Arduino handles them autonomously
+        // Only wait for ACK on critical commands if needed
         return true;
     }
     return false;
@@ -604,21 +615,82 @@ async function setServo(angle) {
         angle: angle
     };
 
-    await sendCommandWithRateLimit(command);
+    sendCommand(command, false);  // Don't wait, just send
     addToConsole(`📷 Servo auf ${angle}° gestellt`);
-    await wait(500);
+    // No wait - servo moves on its own
+}
+
+// encoder-based movement with explicit directions
+async function moveDistance(distance, direction, speed) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        addToConsole('Nicht mit Roboter verbunden!', 'error');
+        throw new Error('Nicht verbunden');
+    }
+
+    const command = {
+        type: 'command',
+        action: 'moveDistance',
+        distance: Math.abs(distance),
+        direction: direction,
+        speed: speed
+    };
+
+    sendCommand(command, false);
+    const directionText = direction === 'forward' ? 'vorwärts' : 'rückwärts';
+    addToConsole(`🎯 Fahre ${Math.abs(distance)}mm ${directionText} mit Geschw. ${speed}`);
+}
+
+async function turnPrecise(degrees, direction, speed) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        addToConsole('Nicht mit Roboter verbunden!', 'error');
+        throw new Error('Nicht verbunden');
+    }
+
+    const command = {
+        type: 'command',
+        action: 'rotateDegrees',
+        degrees: Math.abs(degrees),
+        direction: direction,
+        speed: speed
+    };
+
+    sendCommand(command, false);
+    const directionText = direction === 'left' ? 'links' : 'rechts';
+    addToConsole(`🎯 Drehe ${Math.abs(degrees)}° ${directionText} mit Geschw. ${speed}`);
+}
+
+async function resetEncoders() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        addToConsole('Nicht mit Roboter verbunden!', 'error');
+        throw new Error('Nicht verbunden');
+    }
+
+    const command = {
+        type: 'command',
+        action: 'resetEncoders'
+    };
+
+    await sendCommandWithRateLimit(command);
+    currentLeftEncoder = 0;
+    currentRightEncoder = 0;
+    updateEncoderDisplay(0, 0);
+    addToConsole('🔄 Encoder zurückgesetzt');
 }
 
 let lastDistanceCheck = 0;
 
 async function getDistance() {
-    await wait(30);
-
-    const now = Date.now();
-    if (now - lastDistanceCheck > 2000) {
-        lastHeartbeat = now;
-        lastDistanceCheck = now;
+    // Request distance reading from Arduino only when needed
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        const command = {
+            type: 'command',
+            action: 'read_distance'
+        };
+        sendCommand(command, false);
     }
+
+    // Small delay to allow reading
+    await wait(50);
 
     return currentDistance || 0;
 }

@@ -5,46 +5,38 @@ function defineRobotBlocks() {
     Blockly.Blocks['robot_move_forward'] = {
         init: function() {
             this.appendDummyInput()
-                .appendField("🚗 Vorwärts")
+                .appendField("🚗 Fahre")
+                .appendField(new Blockly.FieldNumber(100, 10, 1000), "DISTANCE")
+                .appendField("mm vorwärts")
+                .appendField("Geschw.")
                 .appendField(new Blockly.FieldDropdown([
                     ["langsam (100)", "100"],
                     ["mittel (150)", "150"],
                     ["schnell (200)", "200"]
-                ]), "SPEED")
-                .appendField("für")
-                .appendField(new Blockly.FieldDropdown([
-                    ["0,5 Sek", "0.5"],
-                    ["1 Sek", "1"],
-                    ["2 Sek", "2"],
-                    ["3 Sek", "3"]
-                ]), "DURATION");
+                ]), "SPEED");
             this.setPreviousStatement(true, null);
             this.setNextStatement(true, null);
             this.setColour(120);
-            this.setTooltip("Fährt vorwärts mit gewählter Geschwindigkeit");
+            this.setTooltip("Fährt exakt die angegebene Distanz vorwärts");
         }
     };
 
     Blockly.Blocks['robot_move_backward'] = {
         init: function() {
             this.appendDummyInput()
-                .appendField("🚗 Rückwärts")
+                .appendField("🚗 Fahre")
+                .appendField(new Blockly.FieldNumber(100, 10, 1000), "DISTANCE")
+                .appendField("mm rückwärts")
+                .appendField("Geschw.")
                 .appendField(new Blockly.FieldDropdown([
                     ["langsam (100)", "100"],
                     ["mittel (150)", "150"],
                     ["schnell (200)", "200"]
-                ]), "SPEED")
-                .appendField("für")
-                .appendField(new Blockly.FieldDropdown([
-                    ["0,5 Sek", "0.5"],
-                    ["1 Sek", "1"],
-                    ["2 Sek", "2"],
-                    ["3 Sek", "3"]
-                ]), "DURATION");
+                ]), "SPEED");
             this.setPreviousStatement(true, null);
             this.setNextStatement(true, null);
             this.setColour(120);
-            this.setTooltip("Fährt rückwärts mit gewählter Geschwindigkeit");
+            this.setTooltip("Fährt exakt die angegebene Distanz rückwärts");
         }
     };
 
@@ -52,13 +44,8 @@ function defineRobotBlocks() {
         init: function() {
             this.appendDummyInput()
                 .appendField("🔄 Drehe")
-                .appendField(new Blockly.FieldDropdown([
-                    ["90°", "90"],
-                    ["180°", "180"],
-                    ["360°", "360"],
-                    ["45°", "45"]
-                ]), "DEGREES")
-                .appendField("nach")
+                .appendField(new Blockly.FieldNumber(90, 1, 360), "DEGREES")
+                .appendField("Grad nach")
                 .appendField(new Blockly.FieldDropdown([
                     ["links", "LEFT"],
                     ["rechts", "RIGHT"]
@@ -66,7 +53,7 @@ function defineRobotBlocks() {
             this.setPreviousStatement(true, null);
             this.setNextStatement(true, null);
             this.setColour(120);
-            this.setTooltip("Dreht um eine bestimmte Gradzahl");
+            this.setTooltip("Dreht exakt um die angegebene Gradzahl");
         }
     };
 
@@ -78,6 +65,32 @@ function defineRobotBlocks() {
             this.setNextStatement(true, null);
             this.setColour(0);
             this.setTooltip("Stoppt alle Motoren sofort");
+        }
+    };
+
+
+    Blockly.Blocks['robot_reset_encoders'] = {
+        init: function() {
+            this.appendDummyInput()
+                .appendField("🔄 Encoder zurücksetzen");
+            this.setPreviousStatement(true, null);
+            this.setNextStatement(true, null);
+            this.setColour(75);
+            this.setTooltip("Setzt die Encoder-Zähler auf 0 zurück");
+        }
+    };
+
+    Blockly.Blocks['robot_get_encoder'] = {
+        init: function() {
+            this.appendDummyInput()
+                .appendField("📊 Encoder")
+                .appendField(new Blockly.FieldDropdown([
+                    ["links", "LEFT"],
+                    ["rechts", "RIGHT"]
+                ]), "WHEEL");
+            this.setOutput(true, "Number");
+            this.setColour(75);
+            this.setTooltip("Gibt den aktuellen Encoder-Zählerstand zurück");
         }
     };
 
@@ -277,31 +290,44 @@ function getValueCode(block, name) {
 
 function defineRobotGenerators() {
     window.RobotGenerators['robot_move_forward'] = function(block) {
+        const distance = block.getFieldValue('DISTANCE');
         const speed = block.getFieldValue('SPEED');
-        const duration = block.getFieldValue('DURATION');
-        return 'await moveRobot(' + speed + ', ' + speed + ', ' + duration + ' * 1000);\n';
+        const estimatedTime = Math.max(1000, (distance / (speed * 0.5)) + 500);
+        return 'await moveDistance(' + distance + ', "forward", ' + speed + ');\nawait wait(' + estimatedTime + ');\n';
     };
 
     window.RobotGenerators['robot_move_backward'] = function(block) {
+        const distance = block.getFieldValue('DISTANCE');
         const speed = block.getFieldValue('SPEED');
-        const duration = block.getFieldValue('DURATION');
-        return 'await moveRobot(-' + speed + ', -' + speed + ', ' + duration + ' * 1000);\n';
+        const estimatedTime = Math.max(1000, (distance / (speed * 0.5)) + 500);
+        return 'await moveDistance(' + distance + ', "backward", ' + speed + ');\nawait wait(' + estimatedTime + ');\n';
     };
 
     window.RobotGenerators['robot_turn_degrees'] = function(block) {
         const direction = block.getFieldValue('DIRECTION');
         const degrees = block.getFieldValue('DEGREES');
         const speed = '150';
-
-        if (direction === 'LEFT') {
-            return 'await turnDegrees("left", ' + degrees + ', ' + speed + ');\n';
-        } else {
-            return 'await turnDegrees("right", ' + degrees + ', ' + speed + ');\n';
-        }
+        const turnDirection = direction === 'LEFT' ? 'left' : 'right';
+        const estimatedTime = Math.max(1000, (degrees / 90) * 1500);
+        return 'await turnPrecise(' + degrees + ', "' + turnDirection + '", ' + speed + ');\nawait wait(' + estimatedTime + ');\n';
     };
 
     window.RobotGenerators['robot_stop'] = function(block) {
         return 'await stopRobot();\n';
+    };
+
+
+    window.RobotGenerators['robot_reset_encoders'] = function(block) {
+        return 'await resetEncoders();\n';
+    };
+
+    window.RobotGenerators['robot_get_encoder'] = function(block) {
+        const wheel = block.getFieldValue('WHEEL');
+        if (wheel === 'LEFT') {
+            return ['currentLeftEncoder', 0];
+        } else {
+            return ['currentRightEncoder', 0];
+        }
     };
 
     window.RobotGenerators['robot_wait'] = function(block) {

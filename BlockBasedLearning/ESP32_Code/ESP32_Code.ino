@@ -35,6 +35,8 @@ int currentDistance = 0;
 int currentServo = 90;
 int batteryPercent = 100;
 String motorStatus = "STOPPED";
+long leftEncoderCount = 0;
+long rightEncoderCount = 0;
 
 void setup() {
   Serial.begin(115200);
@@ -83,15 +85,15 @@ void loop() {
     sendToArduino("M 0 0"); // stop motors for safety
   }
 
-  // request sensor data from arduino periodically
-  if (millis() - lastSensorRequest > 100) {
+  // Only request sensor data occasionally - reduce overhead
+  if (millis() - lastSensorRequest > 500) {  // Changed from 100ms to 500ms
     lastSensorRequest = millis();
     requestSensorData();
   }
 
-  // send sensor updates to connected clients
+  // send sensor updates less frequently
   static unsigned long lastUpdate = 0;
-  if (clientConnected && millis() - lastUpdate > 250) {
+  if (clientConnected && millis() - lastUpdate > 1000) {  // Changed from 250ms to 1000ms
     lastUpdate = millis();
     sendSensorData();
   }
@@ -218,6 +220,97 @@ void handleCommand(uint8_t num, char* payload) {
       // scan command
       sendToArduino("SCAN");
       sendAck(num, true);
+
+    } else if (strcmp(action, "read_distance") == 0) {
+      // read distance on demand
+      sendToArduino("READ_DISTANCE");
+      sendAck(num, true);
+
+    } else if (strcmp(action, "moveDistance") == 0) {
+      // distance-based movement: {"action": "moveDistance", "distance": 100, "direction": "forward", "speed": 150}
+      int distance = doc["distance"];
+      const char* direction = doc["direction"];
+      int speed = doc["speed"];
+
+      // constrain values
+      distance = constrain(abs(distance), 0, 1000);  // max 1 meter
+      speed = constrain(speed, 0, 255);
+
+      // convert direction to single char
+      char dir = (strcmp(direction, "forward") == 0) ? 'F' : 'B';
+
+      char cmd[32];
+      sprintf(cmd, "D %d %c %d", distance, dir, speed);
+      sendToArduino(cmd);
+      sendAck(num, true);
+
+    } else if (strcmp(action, "rotateDegrees") == 0) {
+      // rotation-based turning: {"action": "rotateDegrees", "degrees": 90, "direction": "left", "speed": 150}
+      int degrees = doc["degrees"];
+      const char* direction = doc["direction"];
+      int speed = doc["speed"];
+
+      // constrain values
+      degrees = constrain(abs(degrees), 0, 360);
+      speed = constrain(speed, 0, 255);
+
+      // convert direction to single char
+      char dir = (strcmp(direction, "left") == 0) ? 'L' : 'R';
+
+      char cmd[32];
+      sprintf(cmd, "R %d %c %d", degrees, dir, speed);
+      sendToArduino(cmd);
+      sendAck(num, true);
+
+    } else if (strcmp(action, "resetEncoders") == 0) {
+      // reset encoder counts
+      sendToArduino("E");
+      leftEncoderCount = 0;
+      rightEncoderCount = 0;
+      sendAck(num, true);
+
+    } else if (strcmp(action, "getEncoders") == 0) {
+      // query encoder values
+      sendToArduino("Q");
+      sendAck(num, true);
+
+    // Legacy command support for backward compatibility
+    } else if (strcmp(action, "move") == 0) {
+      // encoder-based movement: {"action": "move", "distance": 100, "speed": 150}
+      int distance = doc["distance"];
+      int speed = doc["speed"];
+
+      // constrain values
+      speed = constrain(speed, 0, 255);
+      char dir = (distance >= 0) ? 'F' : 'B';
+      distance = abs(constrain(distance, -1000, 1000));
+
+      char cmd[32];
+      sprintf(cmd, "D %d %c %d", distance, dir, speed);
+      sendToArduino(cmd);
+      sendAck(num, true);
+
+    } else if (strcmp(action, "turn") == 0) {
+      // encoder-based turning: {"action": "turn", "degrees": 90, "speed": 150}
+      int degrees = doc["degrees"];
+      int speed = doc["speed"];
+
+      // constrain values
+      speed = constrain(speed, 0, 255);
+      char dir = (degrees >= 0) ? 'R' : 'L';
+      degrees = abs(constrain(degrees, -360, 360));
+
+      char cmd[32];
+      sprintf(cmd, "R %d %c %d", degrees, dir, speed);
+      sendToArduino(cmd);
+      sendAck(num, true);
+
+    } else if (strcmp(action, "reset_encoders") == 0) {
+      // reset encoder counts (legacy)
+      sendToArduino("E");
+      leftEncoderCount = 0;
+      rightEncoderCount = 0;
+      sendAck(num, true);
     }
 
   } else if (strcmp(type, "ping") == 0) {
@@ -280,7 +373,7 @@ void requestSensorData() {
     data += c;
   }
 
-  // parse response: "distance,servo,battery,status"
+  // parse response: "distance,leftEncoder,rightEncoder,status"
   if (data.length() > 0) {
     int comma1 = data.indexOf(',');
     int comma2 = data.indexOf(',', comma1 + 1);
@@ -288,8 +381,8 @@ void requestSensorData() {
 
     if (comma1 > 0 && comma2 > comma1 && comma3 > comma2) {
       currentDistance = data.substring(0, comma1).toInt();
-      currentServo = data.substring(comma1 + 1, comma2).toInt();
-      batteryPercent = data.substring(comma2 + 1, comma3).toInt();
+      leftEncoderCount = data.substring(comma1 + 1, comma2).toInt();
+      rightEncoderCount = data.substring(comma2 + 1, comma3).toInt();
       motorStatus = data.substring(comma3 + 1);
     }
   }
@@ -301,9 +394,9 @@ void sendSensorData() {
   StaticJsonDocument<256> doc;
   doc["type"] = "sensor_data";
   doc["distance"] = currentDistance;
-  doc["servo_position"] = currentServo;
-  doc["battery_percent"] = batteryPercent;
   doc["motor_status"] = motorStatus;
+  doc["left_encoder"] = leftEncoderCount;
+  doc["right_encoder"] = rightEncoderCount;
   doc["arduino_connected"] = arduinoConnected;
   doc["timestamp"] = millis();
 

@@ -234,7 +234,8 @@
             <button id="connectBtn" onclick="connectWebSocket()" class="btn-warning">Verbinden</button>
             <button id="disconnectBtn" onclick="disconnectWebSocket()" class="btn-danger" style="display: none;">Trennen</button>
             <span id="connectionStatus" class="connection-status disconnected">Getrennt</span>
-            <span id="batteryStatus" style="margin: 0 10px; font-size: 16px;">🔋 --%</span>
+            <span id="encoderStatus" style="margin: 0 10px; font-size: 14px; display: inline;">🎯 L:0 (0mm) R:0 (0mm)</span>
+            <button onclick="toggleDebug()" class="btn-info" title="Debug-Modus">🐛</button>
             <button onclick="runCode()" class="btn-primary">▶ Code ausführen</button>
             <button onclick="stopCode()" class="btn-danger">⏹ STOPP</button>
         </div>
