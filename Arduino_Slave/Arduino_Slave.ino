@@ -29,10 +29,8 @@ const int PULSES_PER_ROTATION = 21;
 const float MM_PER_PULSE = WHEEL_CIRCUMFERENCE / PULSES_PER_ROTATION;  // ~9.72mm
 const float WHEELBASE = 145.0;  // mm center-to-center distance
 
-// motor calibration - adjust if robot drifts
-// values > 1.0 speed up, < 1.0 slow down
-const float LEFT_MOTOR_FACTOR = 1.05;   // increase if drifting right
-const float RIGHT_MOTOR_FACTOR = 0.90;  // decrease if drifting right - MORE AGGRESSIVE
+// motor calibration - disabled until Phase 2 adds encoder-based correction
+// previous values (1.05 / 0.90) were backwards and caused right motor starvation
 
 // turn calibration - compensates for wheel slippage during rotation
 // increase if turns are too shallow, decrease if turns are too far
@@ -41,7 +39,7 @@ const float TURN_CALIBRATION_FACTOR = 1.12;  // 12% more rotation to account for
 // L298N dead zone - PWM below this won't turn the motor, just buzzes
 // MEASURE EMPIRICALLY: ramp PWM from 30 up until each motor shaft turns
 // These are placeholder values - typical range is 30-60 for small DC motors
-const int MOTOR_DEAD_ZONE = 45;
+const int MOTOR_DEAD_ZONE = 75;
 
 // encoder variables (volatile for ISR access)
 volatile long leftEncoderCount = 0;
@@ -49,15 +47,34 @@ volatile long rightEncoderCount = 0;
 volatile byte lastLeftState = HIGH;
 volatile byte lastRightState = HIGH;
 
-// movement control variables
-long targetLeftCount = 0;
-long targetRightCount = 0;
-bool encoderMovementActive = false;
-unsigned long movementStartTime = 0;
+// movement timeout constants
 const unsigned long BASE_MOVEMENT_TIMEOUT = 3000;  // base timeout
 const unsigned long TIMEOUT_PER_PULSE = 100;       // add 100ms per pulse needed
 const unsigned long MAX_MOVEMENT_TIMEOUT = 15000;  // max 15 seconds
-const int POSITION_TOLERANCE = 2;  // allow 2 pulses overshoot
+
+// non-blocking movement state machine (replaces blocking while loops)
+enum MovementState : uint8_t {
+  MOVE_IDLE,       // no movement active
+  MOVE_RUNNING,    // moving with encoder monitoring
+  MOVE_SETTLING,   // motors stopped, waiting 100ms for settling
+  MOVE_COMPLETE    // ready to report done, transitions to IDLE
+};
+
+struct MovementContext {
+  MovementState state;
+  long targetPulses;
+  int baseSpeed;
+  int currentLeftPWM;
+  int currentRightPWM;
+  unsigned long startTime;
+  unsigned long settlingStart;
+  unsigned long timeout;
+  bool isRotation;
+  int8_t leftDirection;   // +1 or -1
+  int8_t rightDirection;  // +1 or -1
+};
+
+MovementContext movement = { MOVE_IDLE, 0, 0, 0, 0, 0, 0, 0, false, 1, 1 };
 
 Servo cameraServo;
 
@@ -206,10 +223,8 @@ void loop() {
     processCommand(localCmd);
   }
 
-  // legacy encoder movement check
-  if (encoderMovementActive) {
-    checkEncoderMovement();
-  }
+  // non-blocking movement state machine (replaces blocking while loops)
+  updateMovement();
 
   // Keep sensor data and response buffer current
   readDistance();
@@ -267,7 +282,7 @@ void processCommand(const char* command) {
       Serial.print(" R=");
       Serial.println(rightSpeed);
 
-      encoderMovementActive = false;  // cancel encoder movement
+      movement.state = MOVE_IDLE;  // cancel any in-progress movement
       setMotors(leftSpeed, rightSpeed);
     }
   }
@@ -280,7 +295,7 @@ void processCommand(const char* command) {
       int distanceMM = cmd.substring(2, space1).toInt();
       char direction = cmd.charAt(space1 + 1);
       int speed = cmd.substring(space2 + 1).toInt();
-      moveDistance(distanceMM, direction, speed);
+      startMoveDistance(distanceMM, direction, speed);
     }
   }
   else if (cmd.startsWith("R ")) {
@@ -292,7 +307,7 @@ void processCommand(const char* command) {
       int degrees = cmd.substring(2, space1).toInt();
       char direction = cmd.charAt(space1 + 1);
       int speed = cmd.substring(space2 + 1).toInt();
-      rotateDegrees(degrees, direction, speed);
+      startRotateDegrees(degrees, direction, speed);
     }
   }
   else if (cmd == "E") {
@@ -300,8 +315,8 @@ void processCommand(const char* command) {
     cli();
     leftEncoderCount = 0;
     rightEncoderCount = 0;
-    encoderMovementActive = false;
     sei();
+    movement.state = MOVE_IDLE;  // cancel any in-progress movement
     Serial.println("encoders reset to 0");
   }
   else if (cmd == "Q") {
@@ -319,7 +334,7 @@ void processCommand(const char* command) {
       int distanceMM = cmd.substring(5, space).toInt();
       int speed = cmd.substring(space + 1).toInt();
       char dir = (distanceMM >= 0) ? 'F' : 'B';
-      moveDistance(abs(distanceMM), dir, speed);
+      startMoveDistance(abs(distanceMM), dir, speed);
     }
   }
   else if (cmd.startsWith("TURN ")) {
@@ -329,7 +344,7 @@ void processCommand(const char* command) {
       int degrees = cmd.substring(5, space).toInt();
       int speed = cmd.substring(space + 1).toInt();
       char dir = (degrees >= 0) ? 'R' : 'L';
-      rotateDegrees(abs(degrees), dir, speed);
+      startRotateDegrees(abs(degrees), dir, speed);
     }
   }
   else if (cmd == "RESET_ENCODERS") {
@@ -337,8 +352,8 @@ void processCommand(const char* command) {
     cli();
     leftEncoderCount = 0;
     rightEncoderCount = 0;
-    encoderMovementActive = false;
     sei();
+    movement.state = MOVE_IDLE;  // cancel any in-progress movement
     Serial.println("encoders reset to 0");
   }
   else if (cmd.startsWith("S ")) {
@@ -386,8 +401,8 @@ void setMotors(int left, int right) {
   }
 
   // apply motor calibration factors
-  int calibratedLeft = left * LEFT_MOTOR_FACTOR;
-  int calibratedRight = right * RIGHT_MOTOR_FACTOR;
+  int calibratedLeft = left;
+  int calibratedRight = right;
 
   // constrain to valid PWM range
   calibratedLeft = constrain(calibratedLeft, -255, 255);
@@ -513,14 +528,15 @@ void performScan() {
   lastServoMove = millis();
 }
 
-// encoder-based movement functions
+// non-blocking movement functions (replace blocking moveDistance/rotateDegrees)
 
-void moveDistance(int distanceMM, char direction, int speed) {
+void startMoveDistance(int distanceMM, char direction, int speed) {
+  // cancel any in-progress movement
+  stopMotors();
+  movement.state = MOVE_IDLE;
+
   long pulsesNeeded = abs(distanceMM) / MM_PER_PULSE;
-
-  // calculate dynamic timeout based on pulses needed
-  unsigned long timeout = BASE_MOVEMENT_TIMEOUT + (pulsesNeeded * TIMEOUT_PER_PULSE);
-  timeout = min(timeout, MAX_MOVEMENT_TIMEOUT);
+  if (pulsesNeeded == 0) return;  // nothing to do
 
   // reset encoders atomically
   cli();
@@ -528,11 +544,33 @@ void moveDistance(int distanceMM, char direction, int speed) {
   rightEncoderCount = 0;
   sei();
 
-  // set direction: 'F' = forward, 'B' = backward
-  speed = constrain(abs(speed), 0, 255);
-  if (direction == 'B') {
-    speed = -speed;
+  speed = constrain(abs(speed), MOTOR_DEAD_ZONE, 255);
+
+  // calculate dynamic timeout based on pulses needed
+  unsigned long timeout = BASE_MOVEMENT_TIMEOUT + (pulsesNeeded * TIMEOUT_PER_PULSE);
+  timeout = min(timeout, MAX_MOVEMENT_TIMEOUT);
+
+  // set up movement context
+  movement.targetPulses = pulsesNeeded;
+  movement.baseSpeed = speed;
+  movement.startTime = millis();
+  movement.timeout = timeout;
+  movement.isRotation = false;
+
+  if (direction == 'F') {
+    movement.leftDirection = 1;
+    movement.rightDirection = 1;
+    strcpy(motorStatusStr, "FORWARD");
+  } else {
+    movement.leftDirection = -1;
+    movement.rightDirection = -1;
+    strcpy(motorStatusStr, "BACKWARD");
   }
+
+  // start motors
+  setMotors(speed * movement.leftDirection, speed * movement.rightDirection);
+  movement.currentLeftPWM = speed;
+  movement.currentRightPWM = speed;
 
   Serial.print("move ");
   Serial.print(distanceMM);
@@ -543,58 +581,20 @@ void moveDistance(int distanceMM, char direction, int speed) {
   Serial.print(" pulses, timeout ");
   Serial.print(timeout);
   Serial.print("ms) at speed ");
-  Serial.println(abs(speed));
+  Serial.println(speed);
 
-  setMotors(speed, speed);
-  unsigned long startTime = millis();
-  strcpy(motorStatusStr, (direction == 'F') ? "FORWARD" : "BACKWARD");
-
-  // blocking loop until target reached
-  while (true) {
-    cli();
-    long leftCount = leftEncoderCount;
-    long rightCount = rightEncoderCount;
-    sei();
-
-    long avgPulses = (abs(leftCount) + abs(rightCount)) / 2;
-
-    if (avgPulses >= (pulsesNeeded - POSITION_TOLERANCE)) {
-      stopMotors();
-      Serial.print("movement complete: L=");
-      Serial.print(leftCount);
-      Serial.print(" R=");
-      Serial.println(rightCount);
-      break;
-    }
-
-    if (millis() - startTime > timeout) {
-      stopMotors();
-      Serial.print("movement timeout after ");
-      Serial.print(timeout);
-      Serial.println("ms!");
-      break;
-    }
-
-    // short delay - allows I2C interrupts to process
-    delayMicroseconds(500);
-  }
-
-  // settling time for motors to fully stop before next command
-  delay(100);
-
-  encoderMovementActive = false;
-  strcpy(motorStatusStr, "STOPPED");
+  // activate state machine last
+  movement.state = MOVE_RUNNING;
 }
 
-void rotateDegrees(int degrees, char direction, int speed) {
-  // calculate arc length with calibration for slippage
+void startRotateDegrees(int degrees, char direction, int speed) {
+  // cancel any in-progress movement
+  stopMotors();
+  movement.state = MOVE_IDLE;
+
   float arcLength = (PI * WHEELBASE * abs(degrees)) / 360.0;
   long pulsesNeeded = (arcLength / MM_PER_PULSE) * TURN_CALIBRATION_FACTOR;
-
-  // calculate dynamic timeout - turns need more time than linear movement
-  // add extra buffer for turns since wheels fight each other
-  unsigned long timeout = BASE_MOVEMENT_TIMEOUT + (pulsesNeeded * TIMEOUT_PER_PULSE * 2);
-  timeout = min(timeout, MAX_MOVEMENT_TIMEOUT);
+  if (pulsesNeeded == 0) return;  // nothing to do
 
   // reset encoders atomically
   cli();
@@ -602,11 +602,37 @@ void rotateDegrees(int degrees, char direction, int speed) {
   rightEncoderCount = 0;
   sei();
 
-  speed = constrain(abs(speed), 0, 255);
+  speed = constrain(abs(speed), MOTOR_DEAD_ZONE, 255);
+
+  // calculate dynamic timeout - turns need more time than linear movement
+  unsigned long timeout = BASE_MOVEMENT_TIMEOUT + (pulsesNeeded * TIMEOUT_PER_PULSE * 2);
+  timeout = min(timeout, MAX_MOVEMENT_TIMEOUT);
+
+  // set up movement context
+  movement.targetPulses = pulsesNeeded;
+  movement.baseSpeed = speed;
+  movement.startTime = millis();
+  movement.timeout = timeout;
+  movement.isRotation = true;
+
+  if (direction == 'L') {
+    movement.leftDirection = -1;
+    movement.rightDirection = 1;
+    strcpy(motorStatusStr, "LEFT");
+  } else {
+    movement.leftDirection = 1;
+    movement.rightDirection = -1;
+    strcpy(motorStatusStr, "RIGHT");
+  }
+
+  // start motors with differential drive
+  setMotors(speed * movement.leftDirection, speed * movement.rightDirection);
+  movement.currentLeftPWM = speed;
+  movement.currentRightPWM = speed;
 
   Serial.print("rotate ");
   Serial.print(degrees);
-  Serial.print("° ");
+  Serial.print("deg ");
   Serial.print(direction == 'L' ? "left" : "right");
   Serial.print(" (");
   Serial.print(pulsesNeeded);
@@ -615,68 +641,70 @@ void rotateDegrees(int degrees, char direction, int speed) {
   Serial.print("ms) at speed ");
   Serial.println(speed);
 
-  // differential drive: opposite wheel directions
-  if (direction == 'L') {
-    setMotors(-speed, speed);
-    strcpy(motorStatusStr, "LEFT");
-  } else {
-    setMotors(speed, -speed);
-    strcpy(motorStatusStr, "RIGHT");
-  }
-
-  unsigned long startTime = millis();
-
-  // blocking loop until target reached
-  while (true) {
-    cli();
-    long leftCount = abs(leftEncoderCount);
-    long rightCount = abs(rightEncoderCount);
-    sei();
-
-    long maxPulses = max(leftCount, rightCount);
-
-    if (maxPulses >= (pulsesNeeded - POSITION_TOLERANCE)) {
-      stopMotors();
-      Serial.print("rotation complete: L=");
-      Serial.print(leftCount);
-      Serial.print(" R=");
-      Serial.println(rightCount);
-      break;
-    }
-
-    if (millis() - startTime > timeout) {
-      stopMotors();
-      Serial.print("rotation timeout after ");
-      Serial.print(timeout);
-      Serial.println("ms!");
-      break;
-    }
-
-    // short delay - allows I2C interrupts to process
-    delayMicroseconds(500);
-  }
-
-  // settling time for motors to fully stop before next command
-  delay(100);
-
-  encoderMovementActive = false;
-  strcpy(motorStatusStr, "STOPPED");
+  // activate state machine last
+  movement.state = MOVE_RUNNING;
 }
 
-void checkEncoderMovement() {
-  // check if targets reached
-  bool leftReached = (leftEncoderCount >= targetLeftCount - POSITION_TOLERANCE);
-  bool rightReached = (rightEncoderCount >= targetRightCount - POSITION_TOLERANCE);
+void updateMovement() {
+  if (movement.state == MOVE_IDLE) return;  // fast path
 
-  // check timeout (use max timeout for legacy encoder movement)
-  bool timeout = (millis() - movementStartTime > MAX_MOVEMENT_TIMEOUT);
+  unsigned long now = millis();
 
-  if ((leftReached && rightReached) || timeout) {
-    // stop motors
+  // read encoder counts atomically once
+  cli();
+  long leftCount = leftEncoderCount;
+  long rightCount = rightEncoderCount;
+  sei();
+
+  // timeout check applies to all active states
+  if (now - movement.startTime > movement.timeout) {
     stopMotors();
-    encoderMovementActive = false;
+    movement.settlingStart = now;
+    movement.state = MOVE_SETTLING;
+    Serial.print("movement timeout after ");
+    Serial.print(movement.timeout);
+    Serial.println("ms!");
+    return;
   }
 
-  // No collision detection here - only when explicitly requested
-  // This removes the overhead of constant distance checking
+  switch (movement.state) {
+    case MOVE_RUNNING: {
+      // calculate progress: average for linear, max for rotation
+      long progress = movement.isRotation
+        ? max(abs(leftCount), abs(rightCount))
+        : (abs(leftCount) + abs(rightCount)) / 2;
+
+      long remaining = movement.targetPulses - progress;
+
+      if (remaining <= 0) {
+        // target reached - stop motors and enter settling
+        stopMotors();
+        movement.settlingStart = now;
+        movement.state = MOVE_SETTLING;
+        Serial.print("movement complete: L=");
+        Serial.print(abs(leftCount));
+        Serial.print(" R=");
+        Serial.println(abs(rightCount));
+      }
+      // else: motors are already running at set speed, nothing to do
+      // (Plan 02 will add encoder correction and adaptive speed here)
+      break;
+    }
+
+    case MOVE_SETTLING:
+      // wait 100ms for motors to physically stop (non-blocking)
+      if (now - movement.settlingStart >= 100) {
+        movement.state = MOVE_COMPLETE;
+      }
+      break;
+
+    case MOVE_COMPLETE:
+      strcpy(motorStatusStr, "STOPPED");
+      movement.state = MOVE_IDLE;
+      Serial.println("movement done");
+      break;
+
+    default:
+      break;
+  }
 }
