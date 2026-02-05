@@ -49,7 +49,9 @@ long targetLeftCount = 0;
 long targetRightCount = 0;
 bool encoderMovementActive = false;
 unsigned long movementStartTime = 0;
-const unsigned long MOVEMENT_TIMEOUT = 5000;  // 5 seconds timeout
+const unsigned long BASE_MOVEMENT_TIMEOUT = 3000;  // base timeout
+const unsigned long TIMEOUT_PER_PULSE = 100;       // add 100ms per pulse needed
+const unsigned long MAX_MOVEMENT_TIMEOUT = 15000;  // max 15 seconds
 const int POSITION_TOLERANCE = 2;  // allow 2 pulses overshoot
 
 Servo cameraServo;
@@ -59,7 +61,7 @@ int rightSpeed = 0;
 int servoAngle = 90;
 int lastServoAngle = 90;  // track last written angle
 int distance = 0;
-String motorStatus = "STOPPED";
+char motorStatusStr[10] = "STOPPED";
 unsigned long lastServoMove = 0;
 const unsigned long SERVO_DETACH_TIMEOUT = 2000; // detach servo after 2s of inactivity
 
@@ -67,8 +69,16 @@ char cmdBuffer[32];
 int cmdIndex = 0;
 bool newCmd = false;
 
+// Pre-formatted I2C response buffer (written in loop, read in ISR)
+char responseBuffer[32] = "0,0,0,STOPPED\n";
+volatile uint8_t responseLen = 14;
+
 unsigned long lastSensorRead = 0;
 const int SENSOR_INTERVAL = 100;      // 100ms
+
+// forward declarations
+void readDistance(bool force = false);
+void performScan();
 
 void setup() {
   Serial.begin(115200);
@@ -159,6 +169,26 @@ ISR(PCINT1_vect) {
   lastRightState = rightState;
 }
 
+void updateResponseBuffer() {
+  char temp[32];
+
+  cli();
+  long leftEnc = leftEncoderCount;
+  long rightEnc = rightEncoderCount;
+  sei();
+
+  int len = snprintf(temp, sizeof(temp), "%d,%ld,%ld,%s\n",
+                     distance, leftEnc, rightEnc, motorStatusStr);
+  if (len >= (int)sizeof(temp)) {
+    len = sizeof(temp) - 1;
+  }
+
+  cli();
+  memcpy(responseBuffer, temp, len + 1);
+  responseLen = (uint8_t)len;
+  sei();
+}
+
 void loop() {
   if (newCmd) {
     // copy to local buffer to prevent overwrite during processing
@@ -175,6 +205,10 @@ void loop() {
   if (encoderMovementActive) {
     checkEncoderMovement();
   }
+
+  // Keep sensor data and response buffer current
+  readDistance();
+  updateResponseBuffer();
 
   // detach servo after timeout to prevent twitching and save power
   if (cameraServo.attached() && (millis() - lastServoMove > SERVO_DETACH_TIMEOUT)) {
@@ -199,34 +233,18 @@ void onReceive(int bytes) {
 
   newCmd = true;
 
-  Serial.print("i2c rx (");
-  Serial.print(bytes);
-  Serial.print(" bytes): ");
-  Serial.println(cmdBuffer);
-
   digitalWrite(LED_BUILTIN, LOW);
 }
 
 void onRequest() {
-  // Simplified response - only essentials
-  // "distance,leftEncoder,rightEncoder,status"
-  String response = String(distance) + "," +
-                   String(leftEncoderCount) + "," +
-                   String(rightEncoderCount) + "," +
-                   motorStatus + "\n";  // Add newline for parsing
-
-  if (response.length() > 31) {
-    response = response.substring(0, 31);
-  }
-
-  Wire.write(response.c_str());
+  Wire.write((const uint8_t*)responseBuffer, responseLen);
 }
 
 void processCommand(const char* command) {
   String cmd = String(command);
   cmd.trim();
 
-  Serial.print("cmd: ");
+  Serial.print("i2c rx: ");
   Serial.println(cmd);
 
   if (cmd.startsWith("M ")) {
@@ -344,22 +362,22 @@ void processCommand(const char* command) {
     performScan();
   }
   else if (cmd == "READ_DISTANCE") {
-    // Read distance only when explicitly requested
-    readDistance();
+    // Read distance only when explicitly requested - force fresh reading
+    readDistance(true);
   }
 }
 
 void setMotors(int left, int right) {
   if (left == 0 && right == 0) {
-    motorStatus = "STOPPED";
+    strcpy(motorStatusStr, "STOPPED");
   } else if (left > 0 && right > 0) {
-    motorStatus = "FORWARD";
+    strcpy(motorStatusStr, "FORWARD");
   } else if (left < 0 && right < 0) {
-    motorStatus = "BACKWARD";
+    strcpy(motorStatusStr, "BACKWARD");
   } else if (left > right) {
-    motorStatus = "RIGHT";
+    strcpy(motorStatusStr, "RIGHT");
   } else {
-    motorStatus = "LEFT";
+    strcpy(motorStatusStr, "LEFT");
   }
 
   // apply motor calibration factors
@@ -370,35 +388,39 @@ void setMotors(int left, int right) {
   calibratedLeft = constrain(calibratedLeft, -255, 255);
   calibratedRight = constrain(calibratedRight, -255, 255);
 
-  // left motor
+  // IMPORTANT: Set PWM to 0 FIRST before changing direction
+  // This prevents brief full-speed pulses when switching directions
+  analogWrite(ENA, 0);
+  analogWrite(ENB, 0);
+  delayMicroseconds(100);  // brief settling time
+
+  // left motor - set direction then PWM
   if (calibratedLeft > 0) {
     digitalWrite(IN1, HIGH);
     digitalWrite(IN2, LOW);
-    analogWrite(ENA, abs(calibratedLeft));
   } else if (calibratedLeft < 0) {
     digitalWrite(IN1, LOW);
     digitalWrite(IN2, HIGH);
-    analogWrite(ENA, abs(calibratedLeft));
   } else {
     digitalWrite(IN1, LOW);
     digitalWrite(IN2, LOW);
-    analogWrite(ENA, 0);
   }
 
-  // right motor
+  // right motor - set direction then PWM
   if (calibratedRight > 0) {
     digitalWrite(IN3, HIGH);
     digitalWrite(IN4, LOW);
-    analogWrite(ENB, abs(calibratedRight));
   } else if (calibratedRight < 0) {
     digitalWrite(IN3, LOW);
     digitalWrite(IN4, HIGH);
-    analogWrite(ENB, abs(calibratedRight));
   } else {
     digitalWrite(IN3, LOW);
     digitalWrite(IN4, LOW);
-    analogWrite(ENB, 0);
   }
+
+  // Now apply PWM after directions are set
+  analogWrite(ENA, abs(calibratedLeft));
+  analogWrite(ENB, abs(calibratedRight));
 }
 
 void stopMotors() {
@@ -410,22 +432,44 @@ void stopMotors() {
   digitalWrite(IN4, LOW);
   leftSpeed = 0;
   rightSpeed = 0;
-  motorStatus = "STOPPED";
+  strcpy(motorStatusStr, "STOPPED");
 }
 
-void readDistance() {
+// force parameter bypasses minimum interval (used by scan)
+void readDistance(bool force = false) {
+  static unsigned long lastReadTime = 0;
+  const unsigned long MIN_READ_INTERVAL = 60; // 60ms minimum between reads
+
+  // enforce minimum interval to prevent echo interference (unless forced)
+  if (!force && millis() - lastReadTime < MIN_READ_INTERVAL) {
+    return;
+  }
+  lastReadTime = millis();
+
+  // ensure trigger pin is low before starting
   digitalWrite(TRIG_PIN, LOW);
-  delayMicroseconds(2);
+  delayMicroseconds(5);
+
+  // send 10us trigger pulse
   digitalWrite(TRIG_PIN, HIGH);
   delayMicroseconds(10);
   digitalWrite(TRIG_PIN, LOW);
 
-  long duration = pulseIn(ECHO_PIN, HIGH, 30000);
-  int newDist = duration * 0.017; // cm
+  // wait for echo with timeout (25ms = ~4m max range)
+  long duration = pulseIn(ECHO_PIN, HIGH, 25000);
 
-  if (newDist > 2 && newDist < 400) {
-    distance = newDist;
+  if (duration > 0) {
+    // calculate distance: duration in microseconds
+    // speed of sound = 343 m/s = 0.0343 cm/us
+    // round trip, so divide by 2: distance = duration / 58.3
+    int newDist = duration / 58;
+
+    // validate reading (2cm min, 300cm max)
+    if (newDist >= 2 && newDist <= 300) {
+      distance = newDist;
+    }
   }
+  // if invalid/timeout, keep previous distance value
 }
 
 void performScan() {
@@ -440,8 +484,8 @@ void performScan() {
   for (int angle = 0; angle <= 180; angle += 30) {
     cameraServo.write(angle);
     lastServoMove = millis();
-    delay(200);
-    readDistance();
+    delay(250);  // give servo time to settle
+    readDistance(true);  // force fresh reading
 
     Serial.print(angle);
     Serial.print("°: ");
@@ -461,6 +505,10 @@ void performScan() {
 void moveDistance(int distanceMM, char direction, int speed) {
   long pulsesNeeded = abs(distanceMM) / MM_PER_PULSE;
 
+  // calculate dynamic timeout based on pulses needed
+  unsigned long timeout = BASE_MOVEMENT_TIMEOUT + (pulsesNeeded * TIMEOUT_PER_PULSE);
+  timeout = min(timeout, MAX_MOVEMENT_TIMEOUT);
+
   // reset encoders atomically
   cli();
   leftEncoderCount = 0;
@@ -479,11 +527,14 @@ void moveDistance(int distanceMM, char direction, int speed) {
   Serial.print(direction == 'F' ? "forward" : "backward");
   Serial.print(" (");
   Serial.print(pulsesNeeded);
-  Serial.print(" pulses) at speed ");
+  Serial.print(" pulses, timeout ");
+  Serial.print(timeout);
+  Serial.print("ms) at speed ");
   Serial.println(abs(speed));
 
   setMotors(speed, speed);
   unsigned long startTime = millis();
+  strcpy(motorStatusStr, (direction == 'F') ? "FORWARD" : "BACKWARD");
 
   // blocking loop until target reached
   while (true) {
@@ -503,22 +554,34 @@ void moveDistance(int distanceMM, char direction, int speed) {
       break;
     }
 
-    if (millis() - startTime > MOVEMENT_TIMEOUT) {
+    if (millis() - startTime > timeout) {
       stopMotors();
-      Serial.println("movement timeout!");
+      Serial.print("movement timeout after ");
+      Serial.print(timeout);
+      Serial.println("ms!");
       break;
     }
 
-    delay(5);
+    // short delay - allows I2C interrupts to process
+    delayMicroseconds(500);
   }
 
+  // settling time for motors to fully stop before next command
+  delay(100);
+
   encoderMovementActive = false;
+  strcpy(motorStatusStr, "STOPPED");
 }
 
 void rotateDegrees(int degrees, char direction, int speed) {
   // calculate arc length with calibration for slippage
   float arcLength = (PI * WHEELBASE * abs(degrees)) / 360.0;
   long pulsesNeeded = (arcLength / MM_PER_PULSE) * TURN_CALIBRATION_FACTOR;
+
+  // calculate dynamic timeout - turns need more time than linear movement
+  // add extra buffer for turns since wheels fight each other
+  unsigned long timeout = BASE_MOVEMENT_TIMEOUT + (pulsesNeeded * TIMEOUT_PER_PULSE * 2);
+  timeout = min(timeout, MAX_MOVEMENT_TIMEOUT);
 
   // reset encoders atomically
   cli();
@@ -534,14 +597,18 @@ void rotateDegrees(int degrees, char direction, int speed) {
   Serial.print(direction == 'L' ? "left" : "right");
   Serial.print(" (");
   Serial.print(pulsesNeeded);
-  Serial.print(" pulses) at speed ");
+  Serial.print(" pulses, timeout ");
+  Serial.print(timeout);
+  Serial.print("ms) at speed ");
   Serial.println(speed);
 
   // differential drive: opposite wheel directions
   if (direction == 'L') {
     setMotors(-speed, speed);
+    strcpy(motorStatusStr, "LEFT");
   } else {
     setMotors(speed, -speed);
+    strcpy(motorStatusStr, "RIGHT");
   }
 
   unsigned long startTime = millis();
@@ -564,16 +631,23 @@ void rotateDegrees(int degrees, char direction, int speed) {
       break;
     }
 
-    if (millis() - startTime > MOVEMENT_TIMEOUT) {
+    if (millis() - startTime > timeout) {
       stopMotors();
-      Serial.println("rotation timeout!");
+      Serial.print("rotation timeout after ");
+      Serial.print(timeout);
+      Serial.println("ms!");
       break;
     }
 
-    delay(5);
+    // short delay - allows I2C interrupts to process
+    delayMicroseconds(500);
   }
 
+  // settling time for motors to fully stop before next command
+  delay(100);
+
   encoderMovementActive = false;
+  strcpy(motorStatusStr, "STOPPED");
 }
 
 void checkEncoderMovement() {
@@ -581,8 +655,8 @@ void checkEncoderMovement() {
   bool leftReached = (leftEncoderCount >= targetLeftCount - POSITION_TOLERANCE);
   bool rightReached = (rightEncoderCount >= targetRightCount - POSITION_TOLERANCE);
 
-  // check timeout
-  bool timeout = (millis() - movementStartTime > MOVEMENT_TIMEOUT);
+  // check timeout (use max timeout for legacy encoder movement)
+  bool timeout = (millis() - movementStartTime > MAX_MOVEMENT_TIMEOUT);
 
   if ((leftReached && rightReached) || timeout) {
     // stop motors
