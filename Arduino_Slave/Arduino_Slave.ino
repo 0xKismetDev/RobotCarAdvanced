@@ -38,6 +38,11 @@ const float RIGHT_MOTOR_FACTOR = 0.90;  // decrease if drifting right - MORE AGG
 // increase if turns are too shallow, decrease if turns are too far
 const float TURN_CALIBRATION_FACTOR = 1.12;  // 12% more rotation to account for slippage
 
+// L298N dead zone - PWM below this won't turn the motor, just buzzes
+// MEASURE EMPIRICALLY: ramp PWM from 30 up until each motor shaft turns
+// These are placeholder values - typical range is 30-60 for small DC motors
+const int MOTOR_DEAD_ZONE = 45;
+
 // encoder variables (volatile for ISR access)
 volatile long leftEncoderCount = 0;
 volatile long rightEncoderCount = 0;
@@ -387,6 +392,14 @@ void setMotors(int left, int right) {
   // constrain to valid PWM range
   calibratedLeft = constrain(calibratedLeft, -255, 255);
   calibratedRight = constrain(calibratedRight, -255, 255);
+
+  // Dead zone: PWM too low to turn motors just causes buzzing
+  if (calibratedLeft != 0 && abs(calibratedLeft) < MOTOR_DEAD_ZONE) {
+    calibratedLeft = 0;
+  }
+  if (calibratedRight != 0 && abs(calibratedRight) < MOTOR_DEAD_ZONE) {
+    calibratedRight = 0;
+  }
 
   // IMPORTANT: Set PWM to 0 FIRST before changing direction
   // This prevents brief full-speed pulses when switching directions
