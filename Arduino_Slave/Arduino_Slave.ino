@@ -41,6 +41,14 @@ const float TURN_CALIBRATION_FACTOR = 1.12;  // 12% more rotation to account for
 // These are placeholder values - typical range is 30-60 for small DC motors
 const int MOTOR_DEAD_ZONE = 75;
 
+// Encoder correction tuning (P-controller for straight-line driving)
+const int ENCODER_DEAD_BAND = 2;   // Don't correct small differences (pulses)
+const int KP = 3;                   // Proportional gain (tune: 2-5)
+
+// Adaptive speed reduction near movement target
+const int MIN_MOVEMENT_SPEED = MOTOR_DEAD_ZONE + 10;  // 85 PWM minimum during deceleration
+const int DECEL_THRESHOLD_PULSES = 3;  // Start decelerating within this many pulses of target
+
 // encoder variables (volatile for ISR access)
 volatile long leftEncoderCount = 0;
 volatile long rightEncoderCount = 0;
@@ -75,6 +83,10 @@ struct MovementContext {
 };
 
 MovementContext movement = { MOVE_IDLE, 0, 0, 0, 0, 0, 0, 0, false, 1, 1 };
+
+// PWM-change tracking: only call setMotors() when values differ
+int lastSetLeftPWM = 0;
+int lastSetRightPWM = 0;
 
 Servo cameraServo;
 
@@ -460,6 +472,8 @@ void stopMotors() {
   digitalWrite(IN4, LOW);
   leftSpeed = 0;
   rightSpeed = 0;
+  lastSetLeftPWM = 0;
+  lastSetRightPWM = 0;
   strcpy(motorStatusStr, "STOPPED");
 }
 
@@ -528,6 +542,57 @@ void performScan() {
   lastServoMove = millis();
 }
 
+// Adaptive speed reduction near movement target
+// Reduces speed linearly in the last 30% of movement (or last DECEL_THRESHOLD_PULSES)
+int calculateAdaptiveSpeed(int baseSpeed, long remainingPulses, long totalPulses) {
+  // For very short moves, use minimum speed from the start
+  if (totalPulses <= 5) {
+    return MIN_MOVEMENT_SPEED;
+  }
+
+  // Deceleration zone: last 30% of movement or last DECEL_THRESHOLD_PULSES, whichever is larger
+  long decelZone = max((long)DECEL_THRESHOLD_PULSES, totalPulses * 3 / 10);
+
+  if (remainingPulses <= decelZone) {
+    // Linear interpolation between baseSpeed and MIN_MOVEMENT_SPEED
+    int speed = MIN_MOVEMENT_SPEED +
+      (int)(((long)(baseSpeed - MIN_MOVEMENT_SPEED) * remainingPulses) / decelZone);
+    return max(speed, (int)MIN_MOVEMENT_SPEED);
+  }
+
+  return baseSpeed;
+}
+
+// Proportional encoder correction for straight-line driving
+// Compares left/right encoder counts and adjusts PWM to keep wheels synchronized
+void applyEncoderCorrection(int speed, long leftCount, long rightCount) {
+  long error = abs(leftCount) - abs(rightCount);  // positive = left ahead
+
+  int leftPWM = speed;
+  int rightPWM = speed;
+
+  if (abs(error) > ENCODER_DEAD_BAND) {
+    int correction = KP * error;  // positive = slow left, speed up right
+    leftPWM = speed - correction / 2;
+    rightPWM = speed + correction / 2;
+  }
+
+  // Clamp to valid range, respecting dead zone
+  leftPWM = constrain(leftPWM, MOTOR_DEAD_ZONE, 255);
+  rightPWM = constrain(rightPWM, MOTOR_DEAD_ZONE, 255);
+
+  // Apply direction from movement context
+  int finalLeft = leftPWM * movement.leftDirection;
+  int finalRight = rightPWM * movement.rightDirection;
+
+  // Only call setMotors() if values changed (avoids overhead from delayMicroseconds settling)
+  if (finalLeft != lastSetLeftPWM || finalRight != lastSetRightPWM) {
+    setMotors(finalLeft, finalRight);
+    lastSetLeftPWM = finalLeft;
+    lastSetRightPWM = finalRight;
+  }
+}
+
 // non-blocking movement functions (replace blocking moveDistance/rotateDegrees)
 
 void startMoveDistance(int distanceMM, char direction, int speed) {
@@ -571,6 +636,8 @@ void startMoveDistance(int distanceMM, char direction, int speed) {
   setMotors(speed * movement.leftDirection, speed * movement.rightDirection);
   movement.currentLeftPWM = speed;
   movement.currentRightPWM = speed;
+  lastSetLeftPWM = speed * movement.leftDirection;
+  lastSetRightPWM = speed * movement.rightDirection;
 
   Serial.print("move ");
   Serial.print(distanceMM);
@@ -629,6 +696,8 @@ void startRotateDegrees(int degrees, char direction, int speed) {
   setMotors(speed * movement.leftDirection, speed * movement.rightDirection);
   movement.currentLeftPWM = speed;
   movement.currentRightPWM = speed;
+  lastSetLeftPWM = speed * movement.leftDirection;
+  lastSetRightPWM = speed * movement.rightDirection;
 
   Serial.print("rotate ");
   Serial.print(degrees);
@@ -685,9 +754,24 @@ void updateMovement() {
         Serial.print(abs(leftCount));
         Serial.print(" R=");
         Serial.println(abs(rightCount));
+      } else {
+        // Calculate adaptive speed based on distance to target
+        int speed = calculateAdaptiveSpeed(movement.baseSpeed, remaining, movement.targetPulses);
+
+        if (!movement.isRotation) {
+          // Straight-line: apply P-controller encoder correction
+          applyEncoderCorrection(speed, leftCount, rightCount);
+        } else {
+          // Rotation: no encoder correction, just adaptive speed with PWM tracking
+          int finalLeft = speed * movement.leftDirection;
+          int finalRight = speed * movement.rightDirection;
+          if (finalLeft != lastSetLeftPWM || finalRight != lastSetRightPWM) {
+            setMotors(finalLeft, finalRight);
+            lastSetLeftPWM = finalLeft;
+            lastSetRightPWM = finalRight;
+          }
+        }
       }
-      // else: motors are already running at set speed, nothing to do
-      // (Plan 02 will add encoder correction and adaptive speed here)
       break;
     }
 
