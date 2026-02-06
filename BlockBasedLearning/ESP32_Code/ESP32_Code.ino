@@ -63,6 +63,7 @@ uint32_t minFreeHeap = UINT32_MAX;
 int currentDistance = 0;
 int currentServo = 90;
 int batteryPercent = 100;
+float currentBatteryVoltage = 0.0;  // 0 = not available (no voltage divider)
 String motorStatus = "STOPPED";
 String lastMotorStatus = "STOPPED";
 long leftEncoderCount = 0;
@@ -116,11 +117,15 @@ void oledTask(void* parameter) {
     oled.print("  R:");
     oled.print(rightEncoderCount);
 
-    // Row 4: ultrasonic distance
+    // Row 4: ultrasonic distance + battery voltage
     oled.setCursor(0, 44);
-    oled.print("Dist: ");
+    oled.print("Dist:");
     oled.print(currentDistance);
-    oled.print("cm");
+    oled.print("cm ");
+    if (currentBatteryVoltage > 0) {
+      oled.print(currentBatteryVoltage, 1);
+      oled.print("V");
+    }
 
     // Row 5: heap + arduino status
     oled.setCursor(0, 56);
@@ -599,18 +604,33 @@ void requestSensorData() {
     Wire.read();
   }
 
-  // parse response: "distance,leftEncoder,rightEncoder,status"
+  // parse response: "distance,leftEncoder,rightEncoder,status[,battMV]"
   if (data.length() > 0) {
     int comma1 = data.indexOf(',');
     int comma2 = (comma1 > 0) ? data.indexOf(',', comma1 + 1) : -1;
     int comma3 = (comma2 > 0) ? data.indexOf(',', comma2 + 1) : -1;
 
-    // validate all commas found before parsing
+    // validate first 3 commas found before parsing
     if (comma1 > 0 && comma2 > comma1 && comma3 > comma2) {
       int newDistance = data.substring(0, comma1).toInt();
       long newLeftEncoder = data.substring(comma1 + 1, comma2).toInt();
       long newRightEncoder = data.substring(comma2 + 1, comma3).toInt();
-      String newMotorStatus = data.substring(comma3 + 1);
+
+      // Check for optional 5th field (battery millivolts)
+      int comma4 = data.indexOf(',', comma3 + 1);
+      String newMotorStatus;
+
+      if (comma4 > comma3) {
+        // New 5-field format: distance,leftEnc,rightEnc,status,battMV
+        newMotorStatus = data.substring(comma3 + 1, comma4);
+        int batteryMV = data.substring(comma4 + 1).toInt();
+        if (batteryMV > 0 && batteryMV < 15000) {
+          currentBatteryVoltage = batteryMV / 1000.0;
+        }
+      } else {
+        // Old 4-field format: distance,leftEnc,rightEnc,status
+        newMotorStatus = data.substring(comma3 + 1);
+      }
 
       // validate parsed values before accepting
       if (newDistance >= 0 && newDistance <= 500) {
@@ -648,6 +668,9 @@ void sendSensorData() {
   doc["left_encoder"] = leftEncoderCount;
   doc["right_encoder"] = rightEncoderCount;
   doc["arduino_connected"] = arduinoConnected;
+  if (currentBatteryVoltage > 0) {
+    doc["battery_voltage"] = currentBatteryVoltage;
+  }
   doc["timestamp"] = millis();
 
   String json;
