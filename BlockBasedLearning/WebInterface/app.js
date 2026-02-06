@@ -5,6 +5,7 @@ let currentDistance = 0;
 let currentLeftEncoder = 0;
 let currentRightEncoder = 0;
 let currentServo = 90;
+let currentMotorStatus = 'STOPPED';
 let debugMode = false;
 
 let reconnectAttempts = 0;
@@ -34,9 +35,7 @@ function initBlockly() {
                     {"kind": "block", "type": "robot_move_forward"},
                     {"kind": "block", "type": "robot_move_backward"},
                     {"kind": "block", "type": "robot_turn_degrees"},
-                    {"kind": "block", "type": "robot_stop"},
-                    {"kind": "block", "type": "robot_reset_encoders"},
-                    {"kind": "block", "type": "robot_get_encoder"}
+                    {"kind": "block", "type": "robot_stop"}
                 ]
             },
             {
@@ -48,7 +47,7 @@ function initBlockly() {
                     {"kind": "block", "type": "robot_get_distance"},
                     {"kind": "block", "type": "robot_if_obstacle"},
                     {"kind": "block", "type": "robot_servo_scan"},
-                    {"kind": "block", "type": "robot_find_best_direction"}
+                    {"kind": "block", "type": "robot_turn_to_clear_direction"}
                 ]
             },
             {
@@ -59,6 +58,14 @@ function initBlockly() {
                     {"kind": "block", "type": "robot_repeat"},
                     {"kind": "block", "type": "robot_forever"},
                     {"kind": "block", "type": "robot_wait"}
+                ]
+            },
+            {
+                "kind": "category",
+                "name": "🔧 Kalibrierung",
+                "colour": "290",
+                "contents": [
+                    {"kind": "block", "type": "robot_calibrate_turns"}
                 ]
             },
             {
@@ -311,8 +318,17 @@ function processCommandQueue() {
 }
 
 function handleWebSocketMessage(data) {
-    if (data.type === 'pong' || data.type === 'sensor_data') {
+    // any message from server is a sign of life
+    if (data.type === 'pong' || data.type === 'sensor_data' || data.type === 'ping') {
         lastHeartbeat = Date.now();
+    }
+
+    // respond to server pings with pong (Phase 1 reliability)
+    if (data.type === 'ping') {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'pong', ts: Date.now() }));
+        }
+        return; // handled
     }
 
     if (data.type === 'sensor_data') {
@@ -320,6 +336,9 @@ function handleWebSocketMessage(data) {
         currentLeftEncoder = data.left_encoder || 0;
         currentRightEncoder = data.right_encoder || 0;
         currentServo = data.servo_position || 90;
+        if (data.motor_status) {
+            currentMotorStatus = data.motor_status;
+        }
 
         updateEncoderDisplay(currentLeftEncoder, currentRightEncoder);
 
@@ -659,6 +678,27 @@ async function turnPrecise(degrees, direction, speed) {
     addToConsole(`🎯 Drehe ${Math.abs(degrees)}° ${directionText} mit Geschw. ${speed}`);
 }
 
+// Wait for Arduino to report movement completion via motor_status in sensor broadcasts.
+// Two-phase: first confirm movement STARTED (non-STOPPED), then wait for COMPLETION (STOPPED).
+// This prevents returning on stale STOPPED status from before the command was processed.
+async function waitForMovementComplete(timeout) {
+    const startTime = Date.now();
+    let sawMoving = false;
+
+    while (Date.now() - startTime < timeout) {
+        if (currentMotorStatus !== 'STOPPED') {
+            sawMoving = true;
+        }
+        // Only accept STOPPED after we've confirmed movement actually started
+        if (sawMoving && currentMotorStatus === 'STOPPED') {
+            return true;
+        }
+        if (window.stopRequested) return false;
+        await wait(50);
+    }
+    return false;  // timed out
+}
+
 async function resetEncoders() {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
         addToConsole('Nicht mit Roboter verbunden!', 'error');
@@ -713,21 +753,33 @@ async function performServoScan(thresholdDistance = 30) {
 
     try {
         for (let angle of angles) {
+            // move servo to angle
             const servoCommand = {
                 type: 'command',
                 action: 'servo',
                 angle: angle
             };
-
             sendCommand(servoCommand, false);
 
-            await wait(200);
+            // wait for servo to settle
+            await wait(250);
+
+            // REQUEST FRESH DISTANCE READING - this is critical!
+            const readCommand = {
+                type: 'command',
+                action: 'read_distance'
+            };
+            sendCommand(readCommand, false);
+
+            // wait for sensor data to update
+            await wait(100);
 
             const distance = currentDistance || 0;
             scanResults.push({ angle, distance });
             addToConsole(`  ${angle}°: ${distance}cm`);
         }
 
+        // return to center
         const centerCommand = {
             type: 'command',
             action: 'servo',
@@ -763,6 +815,7 @@ async function findBestDirection() {
         };
 
         for (let angle of Object.keys(directions).map(Number)) {
+            // move servo to angle
             const servoCommand = {
                 type: 'command',
                 action: 'servo',
@@ -770,13 +823,25 @@ async function findBestDirection() {
             };
             sendCommand(servoCommand, false);
 
-            await wait(200);
+            // wait for servo to settle
+            await wait(250);
+
+            // REQUEST FRESH DISTANCE READING
+            const readCommand = {
+                type: 'command',
+                action: 'read_distance'
+            };
+            sendCommand(readCommand, false);
+
+            // wait for sensor data to update
+            await wait(100);
 
             const distance = currentDistance || 0;
             scanResults.push({ angle, distance, direction: directions[angle] });
             addToConsole(`  ${directions[angle]}: ${distance}cm`);
         }
 
+        // return to center
         const centerCommand = {
             type: 'command',
             action: 'servo',
@@ -800,6 +865,78 @@ async function findBestDirection() {
     } catch (error) {
         addToConsole(`❌ Fehler bei Richtungssuche: ${error.message}`, 'error');
         return 'geradeaus';
+    }
+}
+
+// Turn robot to the clearest direction (scans AND turns)
+async function turnToClearDirection() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        addToConsole('Nicht mit Roboter verbunden!', 'error');
+        return;
+    }
+
+    addToConsole('🧭 Scanne und drehe zur freien Richtung...');
+
+    try {
+        const scanResults = [];
+        // angles: 0=sharp left, 45=left, 90=center, 135=right, 180=sharp right
+        const angles = [0, 45, 90, 135, 180];
+
+        for (let angle of angles) {
+            const servoCommand = { type: 'command', action: 'servo', angle: angle };
+            sendCommand(servoCommand, false);
+            await wait(250);
+
+            const readCommand = { type: 'command', action: 'read_distance' };
+            sendCommand(readCommand, false);
+            await wait(100);
+
+            scanResults.push({ angle, distance: currentDistance || 0 });
+        }
+
+        // return servo to center
+        sendCommand({ type: 'command', action: 'servo', angle: 90 }, false);
+
+        // find best direction
+        let best = scanResults[0];
+        for (let result of scanResults) {
+            if (result.distance > best.distance) {
+                best = result;
+            }
+        }
+
+        addToConsole(`📍 Beste Richtung: ${best.angle}° (${best.distance}cm frei)`);
+
+        // calculate turn needed (servo 90° = forward, so turn = 90 - angle)
+        // angle 0 = sharp left = need to turn 90° left
+        // angle 45 = left = need to turn 45° left
+        // angle 90 = center = no turn needed
+        // angle 135 = right = need to turn 45° right
+        // angle 180 = sharp right = need to turn 90° right
+        const turnNeeded = 90 - best.angle;
+
+        if (Math.abs(turnNeeded) < 10) {
+            addToConsole('✓ Bereits in bester Richtung - keine Drehung nötig');
+            return;
+        }
+
+        const direction = turnNeeded > 0 ? 'left' : 'right';
+        const degrees = Math.abs(turnNeeded);
+
+        addToConsole(`🔄 Drehe ${degrees}° nach ${direction === 'left' ? 'links' : 'rechts'}...`);
+
+        await turnPrecise(degrees, direction, 150);
+
+        // wait for Arduino to report movement complete via motor_status
+        const arcLength = (Math.PI * 145 * degrees) / 360;
+        const pulsesNeeded = Math.ceil((arcLength / 9.72) * 1.12);
+        const timeout = 3000 + (pulsesNeeded * 200);
+        await waitForMovementComplete(timeout);
+
+        addToConsole('✓ Drehung abgeschlossen');
+
+    } catch (error) {
+        addToConsole(`❌ Fehler: ${error.message}`, 'error');
     }
 }
 
@@ -846,6 +983,12 @@ async function calibrateTurning(testSpeed = 150) {
 
 function print(text) {
     addToConsole(`💬 ${text}`, 'info');
+}
+
+// Battery display stub - no battery sensor on this robot
+function updateBatteryDisplay(level) {
+    // No-op: This robot doesn't have a battery sensor
+    // Function exists to prevent errors if called
 }
 
 async function runCode() {
@@ -996,6 +1139,44 @@ function sendManualCommand() {
             sendCommand(cmd);
             addToConsole(`Gesendet: ${command}`);
         }
+    } else if (command.startsWith('D ')) {
+        // Distance movement: "D 500 F 150"
+        const parts = command.split(' ');
+        if (parts.length === 4) {
+            const cmd = {
+                type: 'command',
+                action: 'moveDistance',
+                distance: parseInt(parts[1]),
+                direction: parts[2] === 'F' ? 'forward' : 'backward',
+                speed: parseInt(parts[3])
+            };
+            sendCommand(cmd);
+            addToConsole(`Gesendet: ${command}`);
+        } else {
+            addToConsole('Format: D <mm> <F/B> <speed>', 'error');
+        }
+    } else if (command.startsWith('R ')) {
+        // Rotation: "R 90 L 150"
+        const parts = command.split(' ');
+        if (parts.length === 4) {
+            const cmd = {
+                type: 'command',
+                action: 'rotateDegrees',
+                degrees: parseInt(parts[1]),
+                direction: parts[2] === 'L' ? 'left' : 'right',
+                speed: parseInt(parts[3])
+            };
+            sendCommand(cmd);
+            addToConsole(`Gesendet: ${command}`);
+        } else {
+            addToConsole('Format: R <grad> <L/R> <speed>', 'error');
+        }
+    } else if (command === 'E') {
+        sendCommand({ type: 'command', action: 'resetEncoders' });
+        addToConsole('Gesendet: Encoder Reset');
+    } else if (command === 'Q') {
+        sendCommand({ type: 'command', action: 'getEncoders' });
+        addToConsole('Gesendet: Encoder Abfrage');
     } else if (command.startsWith('S ')) {
         const angle = parseInt(command.substring(2));
         const cmd = {
@@ -1048,8 +1229,8 @@ function loadDefaultProgram() {
                                                 <block type="robot_stop">
                                                     <next>
                                                         <block type="robot_move_backward">
+                                                            <field name="DISTANCE">100</field>
                                                             <field name="SPEED">150</field>
-                                                            <field name="DURATION">0.5</field>
                                                             <next>
                                                                 <block type="robot_turn_degrees">
                                                                     <field name="DEGREES">90</field>
@@ -1064,8 +1245,8 @@ function loadDefaultProgram() {
                                     </statement>
                                     <statement name="ELSE">
                                         <block type="robot_move_forward">
+                                            <field name="DISTANCE">100</field>
                                             <field name="SPEED">150</field>
-                                            <field name="DURATION">0.5</field>
                                         </block>
                                     </statement>
                                 </block>

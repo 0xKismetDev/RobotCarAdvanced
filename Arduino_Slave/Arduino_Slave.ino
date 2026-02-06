@@ -34,19 +34,23 @@ const float WHEELBASE = 145.0;  // mm center-to-center distance
 
 // turn calibration - compensates for wheel slippage during rotation
 // increase if turns are too shallow, decrease if turns are too far
-const float TURN_CALIBRATION_FACTOR = 1.12;  // 12% more rotation to account for slippage
+const float TURN_CALIBRATION_FACTOR = 1.08;  // 8% more rotation to account for slippage
 
 // L298N dead zone - PWM below this won't turn the motor, just buzzes
 // MEASURE EMPIRICALLY: ramp PWM from 30 up until each motor shaft turns
 // These are placeholder values - typical range is 30-60 for small DC motors
 const int MOTOR_DEAD_ZONE = 75;
 
-// Encoder correction tuning (P-controller for straight-line driving)
-const int ENCODER_DEAD_BAND = 2;   // Don't correct small differences (pulses)
-const int KP = 3;                   // Proportional gain (tune: 2-5)
+// Feedforward: static boost for weaker right motor (applied in setMotors)
+// Tune empirically: increase if car still drifts right, decrease if it drifts left
+const int RIGHT_MOTOR_BOOST = 15;
+
+// Feedback: P-controller for fine-tuning straight-line driving
+const int ENCODER_DEAD_BAND = 1;   // Don't correct small differences (pulses)
+const int KP = 8;                    // Proportional gain (moderate — feedforward handles gross imbalance)
 
 // Adaptive speed reduction near movement target
-const int MIN_MOVEMENT_SPEED = MOTOR_DEAD_ZONE + 10;  // 85 PWM minimum during deceleration
+const int MIN_MOVEMENT_SPEED = MOTOR_DEAD_ZONE + 20;  // 95 PWM minimum during deceleration
 const int DECEL_THRESHOLD_PULSES = 3;  // Start decelerating within this many pulses of target
 
 // encoder variables (volatile for ISR access)
@@ -412,7 +416,6 @@ void setMotors(int left, int right) {
     strcpy(motorStatusStr, "LEFT");
   }
 
-  // apply motor calibration factors
   int calibratedLeft = left;
   int calibratedRight = right;
 
@@ -568,16 +571,30 @@ int calculateAdaptiveSpeed(int baseSpeed, long remainingPulses, long totalPulses
 void applyEncoderCorrection(int speed, long leftCount, long rightCount) {
   long error = abs(leftCount) - abs(rightCount);  // positive = left ahead
 
+  // Feedforward: right motor starts with static boost to compensate for known weakness
   int leftPWM = speed;
-  int rightPWM = speed;
+  int rightPWM = speed + RIGHT_MOTOR_BOOST;
 
   if (abs(error) > ENCODER_DEAD_BAND) {
     int correction = KP * error;  // positive = slow left, speed up right
     leftPWM = speed - correction / 2;
     rightPWM = speed + correction / 2;
+
+    // Redistribute correction if one side hits the dead zone floor
+    // (prevents saturation during low-speed deceleration)
+    if (leftPWM < MOTOR_DEAD_ZONE) {
+      int deficit = MOTOR_DEAD_ZONE - leftPWM;
+      leftPWM = MOTOR_DEAD_ZONE;
+      rightPWM += deficit;
+    }
+    if (rightPWM < MOTOR_DEAD_ZONE) {
+      int deficit = MOTOR_DEAD_ZONE - rightPWM;
+      rightPWM = MOTOR_DEAD_ZONE;
+      leftPWM += deficit;
+    }
   }
 
-  // Clamp to valid range, respecting dead zone
+  // Clamp to valid range
   leftPWM = constrain(leftPWM, MOTOR_DEAD_ZONE, 255);
   rightPWM = constrain(rightPWM, MOTOR_DEAD_ZONE, 255);
 

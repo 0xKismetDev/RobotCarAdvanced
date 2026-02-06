@@ -69,30 +69,8 @@ function defineRobotBlocks() {
     };
 
 
-    Blockly.Blocks['robot_reset_encoders'] = {
-        init: function() {
-            this.appendDummyInput()
-                .appendField("🔄 Encoder zurücksetzen");
-            this.setPreviousStatement(true, null);
-            this.setNextStatement(true, null);
-            this.setColour(75);
-            this.setTooltip("Setzt die Encoder-Zähler auf 0 zurück");
-        }
-    };
-
-    Blockly.Blocks['robot_get_encoder'] = {
-        init: function() {
-            this.appendDummyInput()
-                .appendField("📊 Encoder")
-                .appendField(new Blockly.FieldDropdown([
-                    ["links", "LEFT"],
-                    ["rechts", "RIGHT"]
-                ]), "WHEEL");
-            this.setOutput(true, "Number");
-            this.setColour(75);
-            this.setTooltip("Gibt den aktuellen Encoder-Zählerstand zurück");
-        }
-    };
+    // Encoder blocks removed - they reset automatically before each movement
+    // making manual access impractical for block-based programming
 
     Blockly.Blocks['robot_servo'] = {
         init: function() {
@@ -144,21 +122,23 @@ function defineRobotBlocks() {
         }
     };
 
-    Blockly.Blocks['robot_find_best_direction'] = {
+    // robot_turn_to_clear_direction - scans AND turns to best direction
+    Blockly.Blocks['robot_turn_to_clear_direction'] = {
         init: function() {
             this.appendDummyInput()
-                .appendField("🧭 Finde beste Richtung");
-            this.setOutput(true, "String");
+                .appendField("🧭 Drehe zur freien Richtung");
+            this.setPreviousStatement(true, null);
+            this.setNextStatement(true, null);
             this.setColour(230);
-            this.setTooltip("Scannt alle Richtungen und gibt zurück wo am meisten Platz ist (links/mitte/rechts)");
+            this.setTooltip("Scannt alle Richtungen und dreht automatisch dorthin wo am meisten Platz ist");
         }
     };
 
     Blockly.Blocks['robot_calibrate_turns'] = {
         init: function() {
             this.appendDummyInput()
-                .appendField("🎯 Kalibriere Drehungen")
-                .appendField("Geschwindigkeit:")
+                .appendField("🎯 Test: Kalibrierung prüfen")
+                .appendField("Geschw.")
                 .appendField(new Blockly.FieldDropdown([
                     ["100", "100"],
                     ["150", "150"],
@@ -167,7 +147,7 @@ function defineRobotBlocks() {
             this.setPreviousStatement(true, null);
             this.setNextStatement(true, null);
             this.setColour(290);
-            this.setTooltip("Führt eine Kalibrierungsroutine für präzise Drehungen aus");
+            this.setTooltip("NUR ZUM TESTEN: Dreht 90° und zeigt ob Kalibrierung stimmt. Ändert keine Werte.");
             this.setHelpUrl("");
         }
     };
@@ -292,15 +272,18 @@ function defineRobotGenerators() {
     window.RobotGenerators['robot_move_forward'] = function(block) {
         const distance = block.getFieldValue('DISTANCE');
         const speed = block.getFieldValue('SPEED');
-        const estimatedTime = Math.max(1000, (distance / (speed * 0.5)) + 500);
-        return 'await moveDistance(' + distance + ', "forward", ' + speed + ');\nawait wait(' + estimatedTime + ');\n';
+        // Timeout: generous upper bound for safety (Arduino has its own timeout)
+        const pulsesNeeded = Math.ceil(distance / 9.72);
+        const timeout = 3000 + (pulsesNeeded * 150);  // base + per-pulse safety margin
+        return 'await moveDistance(' + distance + ', "forward", ' + speed + ');\nawait waitForMovementComplete(' + timeout + ');\n';
     };
 
     window.RobotGenerators['robot_move_backward'] = function(block) {
         const distance = block.getFieldValue('DISTANCE');
         const speed = block.getFieldValue('SPEED');
-        const estimatedTime = Math.max(1000, (distance / (speed * 0.5)) + 500);
-        return 'await moveDistance(' + distance + ', "backward", ' + speed + ');\nawait wait(' + estimatedTime + ');\n';
+        const pulsesNeeded = Math.ceil(distance / 9.72);
+        const timeout = 3000 + (pulsesNeeded * 150);
+        return 'await moveDistance(' + distance + ', "backward", ' + speed + ');\nawait waitForMovementComplete(' + timeout + ');\n';
     };
 
     window.RobotGenerators['robot_turn_degrees'] = function(block) {
@@ -308,8 +291,10 @@ function defineRobotGenerators() {
         const degrees = block.getFieldValue('DEGREES');
         const speed = '150';
         const turnDirection = direction === 'LEFT' ? 'left' : 'right';
-        const estimatedTime = Math.max(1000, (degrees / 90) * 1500);
-        return 'await turnPrecise(' + degrees + ', "' + turnDirection + '", ' + speed + ');\nawait wait(' + estimatedTime + ');\n';
+        const arcLength = (Math.PI * 145 * degrees) / 360;
+        const pulsesNeeded = Math.ceil((arcLength / 9.72) * 1.12);
+        const timeout = 3000 + (pulsesNeeded * 200);  // turns are slower
+        return 'await turnPrecise(' + degrees + ', "' + turnDirection + '", ' + speed + ');\nawait waitForMovementComplete(' + timeout + ');\n';
     };
 
     window.RobotGenerators['robot_stop'] = function(block) {
@@ -317,18 +302,7 @@ function defineRobotGenerators() {
     };
 
 
-    window.RobotGenerators['robot_reset_encoders'] = function(block) {
-        return 'await resetEncoders();\n';
-    };
-
-    window.RobotGenerators['robot_get_encoder'] = function(block) {
-        const wheel = block.getFieldValue('WHEEL');
-        if (wheel === 'LEFT') {
-            return ['currentLeftEncoder', 0];
-        } else {
-            return ['currentRightEncoder', 0];
-        }
-    };
+    // Encoder generator removed - not useful for block programming
 
     window.RobotGenerators['robot_wait'] = function(block) {
         const duration = block.getFieldValue('DURATION');
@@ -399,8 +373,8 @@ function defineRobotGenerators() {
         return code;
     };
 
-    window.RobotGenerators['robot_find_best_direction'] = function(block) {
-        return ['(await findBestDirection())', 0];
+    window.RobotGenerators['robot_turn_to_clear_direction'] = function(block) {
+        return 'await turnToClearDirection();\n';
     };
 
     window.RobotGenerators['robot_calibrate_turns'] = function(block) {

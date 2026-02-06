@@ -6,7 +6,7 @@ import sys
 import webbrowser
 from threading import Timer
 
-PORT = 8080
+PORT = 8081
 HOST = "localhost"
 
 class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
