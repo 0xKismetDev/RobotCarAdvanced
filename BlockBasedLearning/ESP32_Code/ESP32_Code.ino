@@ -344,13 +344,92 @@ void oledTask(void* parameter) {
   }
 
   oled.clearDisplay();
-  oled.setTextSize(1);
-  oled.setTextColor(SSD1306_WHITE);
-  oled.setCursor(0, 0);
-  oled.println("RobotCar");
-  oled.println("Starting...");
   oled.display();
   Serial.println("OLED: OK on Wire1 (GPIO16/17)");
+
+  // ── Startup animation ──────────────────────────────────
+  // Phase 1: Draw border with animated corners
+  for (int i = 0; i <= 63; i += 2) {
+    oled.drawPixel(i, 0, SSD1306_WHITE);           // top edge left→right
+    oled.drawPixel(127 - i, 63, SSD1306_WHITE);    // bottom edge right→left
+    if (i <= 31) {
+      oled.drawPixel(0, i, SSD1306_WHITE);          // left edge top→bottom
+      oled.drawPixel(127, 63 - i, SSD1306_WHITE);   // right edge bottom→top
+    }
+    oled.display();
+    vTaskDelay(pdMS_TO_TICKS(8));
+  }
+  // Complete the border rectangle
+  oled.drawRect(0, 0, 128, 64, SSD1306_WHITE);
+  oled.display();
+  vTaskDelay(pdMS_TO_TICKS(100));
+
+  // Phase 2: Animated wheel spin (4 frames)
+  const char* wheelFrames[] = { "|", "/", "-", "\\" };
+  for (int cycle = 0; cycle < 3; cycle++) {
+    for (int f = 0; f < 4; f++) {
+      oled.fillRect(10, 24, 16, 16, SSD1306_BLACK);
+      oled.fillRect(102, 24, 16, 16, SSD1306_BLACK);
+      // Left wheel
+      oled.setCursor(14, 28);
+      oled.setTextSize(1);
+      oled.setTextColor(SSD1306_WHITE);
+      oled.print(wheelFrames[f]);
+      // Right wheel
+      oled.setCursor(106, 28);
+      oled.print(wheelFrames[f]);
+      // Draw wheel circles
+      oled.drawCircle(16, 31, 8, SSD1306_WHITE);
+      oled.drawCircle(108, 31, 8, SSD1306_WHITE);
+      oled.display();
+      vTaskDelay(pdMS_TO_TICKS(80));
+    }
+  }
+
+  // Phase 3: Title reveal — "BKTM Car" letter by letter
+  const char* title = "BKTM Car";
+  int titleLen = 8;
+  int titleX = (128 - titleLen * 12) / 2;  // center for size 2
+  oled.fillRect(2, 10, 124, 20, SSD1306_BLACK);
+  oled.setTextSize(2);
+  oled.setTextColor(SSD1306_WHITE);
+  for (int i = 0; i < titleLen; i++) {
+    oled.setCursor(titleX + i * 12, 14);
+    oled.print(title[i]);
+    oled.display();
+    vTaskDelay(pdMS_TO_TICKS(100));
+  }
+  vTaskDelay(pdMS_TO_TICKS(200));
+
+  // Phase 4: Subtitle fade-in
+  oled.setTextSize(1);
+  oled.setCursor(30, 38);
+  oled.print("Block Learning");
+  oled.display();
+  vTaskDelay(pdMS_TO_TICKS(300));
+
+  // Phase 5: Progress bar animation
+  oled.drawRect(14, 52, 100, 8, SSD1306_WHITE);
+  oled.display();
+  for (int w = 0; w < 96; w += 3) {
+    oled.fillRect(16, 54, w, 4, SSD1306_WHITE);
+    oled.display();
+    vTaskDelay(pdMS_TO_TICKS(15));
+  }
+  oled.fillRect(16, 54, 96, 4, SSD1306_WHITE);
+  oled.display();
+  vTaskDelay(pdMS_TO_TICKS(400));
+
+  // Phase 6: Flash and clear
+  oled.invertDisplay(true);
+  vTaskDelay(pdMS_TO_TICKS(100));
+  oled.invertDisplay(false);
+  vTaskDelay(pdMS_TO_TICKS(100));
+  oled.invertDisplay(true);
+  vTaskDelay(pdMS_TO_TICKS(80));
+  oled.invertDisplay(false);
+  vTaskDelay(pdMS_TO_TICKS(300));
+  // ── End startup animation ──────────────────────────────
 
   for (;;) {
     oled.clearDisplay();
