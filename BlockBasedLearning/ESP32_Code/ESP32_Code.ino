@@ -344,7 +344,7 @@ void oledTask(void* parameter) {
   }
 
   oled.clearDisplay();
-  oled.setRotation(1);  // Portrait mode: 64 wide x 128 tall (vertical mount)
+  oled.setRotation(3);  // Portrait mode: 64 wide x 128 tall (vertical mount, flipped)
   oled.display();
   Serial.println("OLED: OK on Wire1 (GPIO16/17) [portrait]");
 
