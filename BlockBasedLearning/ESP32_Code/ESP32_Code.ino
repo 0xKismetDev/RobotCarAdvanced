@@ -344,54 +344,63 @@ void oledTask(void* parameter) {
   }
 
   oled.clearDisplay();
+  oled.setRotation(1);  // Portrait mode: 64 wide x 128 tall (vertical mount)
   oled.display();
-  Serial.println("OLED: OK on Wire1 (GPIO16/17)");
+  Serial.println("OLED: OK on Wire1 (GPIO16/17) [portrait]");
 
-  // ── Startup animation ──────────────────────────────────
-  // Phase 1: Draw border with animated corners
-  for (int i = 0; i <= 63; i += 2) {
-    oled.drawPixel(i, 0, SSD1306_WHITE);           // top edge left→right
-    oled.drawPixel(127 - i, 63, SSD1306_WHITE);    // bottom edge right→left
+  // ── Startup animation (64x128 portrait) ────────────────
+  // Phase 1: Draw border with animated edges
+  for (int i = 0; i <= 31; i += 1) {
+    oled.drawPixel(i, 0, SSD1306_WHITE);             // top edge left→right
+    oled.drawPixel(63 - i, 127, SSD1306_WHITE);      // bottom edge right→left
     if (i <= 31) {
-      oled.drawPixel(0, i, SSD1306_WHITE);          // left edge top→bottom
-      oled.drawPixel(127, 63 - i, SSD1306_WHITE);   // right edge bottom→top
+      oled.drawPixel(0, i * 2, SSD1306_WHITE);        // left edge top→down
+      oled.drawPixel(63, 127 - i * 2, SSD1306_WHITE); // right edge bottom→up
     }
     oled.display();
-    vTaskDelay(pdMS_TO_TICKS(8));
+    vTaskDelay(pdMS_TO_TICKS(10));
   }
-  // Complete the border rectangle
-  oled.drawRect(0, 0, 128, 64, SSD1306_WHITE);
+  oled.drawRect(0, 0, 64, 128, SSD1306_WHITE);
   oled.display();
   vTaskDelay(pdMS_TO_TICKS(100));
 
-  // Phase 2: Title reveal — "BKTM Car" letter by letter
-  const char* title = "BKTM Car";
-  int titleLen = 8;
-  int titleX = (128 - titleLen * 12) / 2;  // center for size 2
-  oled.fillRect(2, 10, 124, 20, SSD1306_BLACK);
-  oled.setTextSize(2);
+  // Phase 2: Title reveal — "BKTM" then "Car" letter by letter
   oled.setTextColor(SSD1306_WHITE);
-  for (int i = 0; i < titleLen; i++) {
-    oled.setCursor(titleX + i * 12, 14);
-    oled.print(title[i]);
-    oled.display();
-    vTaskDelay(pdMS_TO_TICKS(100));
-  }
-  vTaskDelay(pdMS_TO_TICKS(200));
 
-  // Phase 3: Progress bar animation
-  oled.drawRect(14, 52, 100, 8, SSD1306_WHITE);
-  oled.display();
-  for (int w = 0; w < 96; w += 3) {
-    oled.fillRect(16, 54, w, 4, SSD1306_WHITE);
+  // "BKTM" centered at size 2: 4 chars * 12px = 48px → x=(64-48)/2=8
+  const char* line1 = "BKTM";
+  oled.setTextSize(2);
+  for (int i = 0; i < 4; i++) {
+    oled.setCursor(8 + i * 12, 40);
+    oled.print(line1[i]);
     oled.display();
-    vTaskDelay(pdMS_TO_TICKS(15));
+    vTaskDelay(pdMS_TO_TICKS(120));
   }
-  oled.fillRect(16, 54, 96, 4, SSD1306_WHITE);
-  oled.display();
-  vTaskDelay(pdMS_TO_TICKS(400));
+  vTaskDelay(pdMS_TO_TICKS(150));
 
-  // Phase 6: Flash and clear
+  // "Car" centered at size 2: 3 chars * 12px = 36px → x=(64-36)/2=14
+  const char* line2 = "Car";
+  for (int i = 0; i < 3; i++) {
+    oled.setCursor(14 + i * 12, 62);
+    oled.print(line2[i]);
+    oled.display();
+    vTaskDelay(pdMS_TO_TICKS(120));
+  }
+  vTaskDelay(pdMS_TO_TICKS(300));
+
+  // Phase 3: Progress bar animation (vertical bar going down)
+  oled.drawRect(24, 92, 16, 28, SSD1306_WHITE);
+  oled.display();
+  for (int h = 0; h < 24; h += 1) {
+    oled.fillRect(26, 94, 12, h, SSD1306_WHITE);
+    oled.display();
+    vTaskDelay(pdMS_TO_TICKS(25));
+  }
+  oled.fillRect(26, 94, 12, 24, SSD1306_WHITE);
+  oled.display();
+  vTaskDelay(pdMS_TO_TICKS(300));
+
+  // Phase 4: Flash and clear
   oled.invertDisplay(true);
   vTaskDelay(pdMS_TO_TICKS(100));
   oled.invertDisplay(false);
@@ -402,46 +411,62 @@ void oledTask(void* parameter) {
   vTaskDelay(pdMS_TO_TICKS(300));
   // ── End startup animation ──────────────────────────────
 
+  // ── Main status loop (64x128 portrait) ─────────────────
   for (;;) {
     oled.clearDisplay();
 
-    // Row 1 (y=0..15): WiFi icon + Motor icon + status label
+    // Row 1 (y=0): Icons — WiFi + Motor + Arduino across top
     oled.drawBitmap(0, 0, clientConnected ? icon_wifi : icon_no_wifi, 16, 16, SSD1306_WHITE);
-    oled.drawBitmap(20, 0, getMotorIcon(motorStatus), 16, 16, SSD1306_WHITE);
-    oled.setTextSize(1);
-    oled.setTextColor(SSD1306_WHITE);
-    oled.setCursor(40, 4);
-    oled.print(motorStatus);
+    oled.drawBitmap(24, 0, getMotorIcon(motorStatus), 16, 16, SSD1306_WHITE);
+    oled.drawBitmap(48, 0, arduinoConnected ? icon_arduino_ok : icon_arduino_no, 16, 16, SSD1306_WHITE);
 
-    // Row 2 (y=18..33): motor status abbreviated (large text)
+    // Row 2 (y=20): Motor status large text, centered
     oled.setTextSize(2);
-    oled.setCursor(0, 18);
-    if (motorStatus == "FORWARD") oled.print("FWD");
-    else if (motorStatus == "BACKWARD") oled.print("BWD");
-    else if (motorStatus == "STOPPED") oled.print("STOP");
-    else if (motorStatus == "TIMEOUT") oled.print("T/OUT");
-    else oled.print(motorStatus.substring(0, 5));
+    oled.setTextColor(SSD1306_WHITE);
+    String abbrev;
+    if (motorStatus == "FORWARD") abbrev = "FWD";
+    else if (motorStatus == "BACKWARD") abbrev = "BWD";
+    else if (motorStatus == "STOPPED") abbrev = "STOP";
+    else if (motorStatus == "TIMEOUT") abbrev = "TOUT";
+    else abbrev = motorStatus.substring(0, 4);
+    int textW = abbrev.length() * 12;
+    oled.setCursor((64 - textW) / 2, 22);
+    oled.print(abbrev);
 
-    // Row 3 (y=34..43): encoder counts
+    // Divider line
+    oled.drawLine(4, 42, 60, 42, SSD1306_WHITE);
+
+    // Row 3 (y=46): Encoder left
     oled.setTextSize(1);
-    oled.setCursor(0, 36);
+    oled.setCursor(0, 48);
     oled.print("L:");
     oled.print(leftEncoderCount);
-    oled.print("  R:");
+
+    // Row 4 (y=58): Encoder right
+    oled.setCursor(0, 60);
+    oled.print("R:");
     oled.print(rightEncoderCount);
 
-    // Row 4 (y=46..55): distance
-    oled.setCursor(0, 46);
+    // Divider line
+    oled.drawLine(4, 73, 60, 73, SSD1306_WHITE);
+
+    // Row 5 (y=78): Distance
+    oled.setCursor(0, 78);
     oled.print("Dist:");
     oled.print(currentDistance);
     oled.print("cm");
 
-    // Row 5 (y=56..63): heap + Arduino connection icon at right edge
-    oled.setCursor(0, 56);
+    // Row 6 (y=90): Ultrasonic (if useful)
+    // (reserved)
+
+    // Divider line
+    oled.drawLine(4, 104, 60, 104, SSD1306_WHITE);
+
+    // Row 7 (y=108): Heap
+    oled.setCursor(0, 110);
     oled.print("Heap:");
     oled.print(ESP.getFreeHeap() / 1024);
     oled.print("K");
-    oled.drawBitmap(112, 48, arduinoConnected ? icon_arduino_ok : icon_arduino_no, 16, 16, SSD1306_WHITE);
 
     oled.display();
     vTaskDelay(pdMS_TO_TICKS(200));  // 5Hz refresh
