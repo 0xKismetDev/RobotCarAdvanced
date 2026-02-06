@@ -45,9 +45,12 @@ const int MOTOR_DEAD_ZONE = 75;
 // Tune empirically: increase if car still drifts right, decrease if it drifts left
 const int RIGHT_MOTOR_BOOST = 15;
 
-// Feedback: P-controller for fine-tuning straight-line driving
+// Feedback: PI-controller for fine-tuning straight-line driving
 const int ENCODER_DEAD_BAND = 1;   // Don't correct small differences (pulses)
 const int KP = 8;                    // Proportional gain (moderate — feedforward handles gross imbalance)
+const int KI = 2;                    // Integral gain (conservative — corrects persistent drift)
+const int MAX_INTEGRAL = 30;         // Anti-windup clamp (max integral contribution = KI*MAX_INTEGRAL = 60 PWM)
+int integralError = 0;               // Accumulated error (reset each movement)
 
 // Adaptive speed reduction near movement target
 const int MIN_MOVEMENT_SPEED = MOTOR_DEAD_ZONE + 20;  // 95 PWM minimum during deceleration
@@ -587,8 +590,9 @@ int calculateAdaptiveSpeed(int baseSpeed, long remainingPulses, long totalPulses
   return baseSpeed;
 }
 
-// Proportional encoder correction for straight-line driving
+// PI encoder correction for straight-line driving
 // Compares left/right encoder counts and adjusts PWM to keep wheels synchronized
+// P-term handles immediate correction, I-term compensates persistent motor bias
 void applyEncoderCorrection(int speed, long leftCount, long rightCount) {
   long error = abs(leftCount) - abs(rightCount);  // positive = left ahead
 
@@ -597,9 +601,13 @@ void applyEncoderCorrection(int speed, long leftCount, long rightCount) {
   int rightPWM = speed + RIGHT_MOTOR_BOOST;
 
   if (abs(error) > ENCODER_DEAD_BAND) {
-    int correction = KP * error;  // positive = slow left, speed up right
+    // Accumulate integral with anti-windup clamping
+    integralError = constrain(integralError + (int)error, -MAX_INTEGRAL, MAX_INTEGRAL);
+
+    // PI correction: positive = slow left, speed up right
+    int correction = KP * (int)error + KI * integralError;
     leftPWM = speed - correction / 2;
-    rightPWM = speed + correction / 2;
+    rightPWM = speed + correction / 2 + RIGHT_MOTOR_BOOST;  // BUG FIX: preserve boost in correction path
 
     // Redistribute correction if one side hits the dead zone floor
     // (prevents saturation during low-speed deceleration)
@@ -647,6 +655,9 @@ void startMoveDistance(int distanceMM, char direction, int speed) {
   leftEncoderCount = 0;
   rightEncoderCount = 0;
   sei();
+
+  // reset PI controller integral for fresh movement
+  integralError = 0;
 
   speed = constrain(abs(speed), MOTOR_DEAD_ZONE, 255);
 
@@ -713,6 +724,9 @@ void startRotateDegrees(int degrees, char direction, int speed) {
   leftEncoderCount = 0;
   rightEncoderCount = 0;
   sei();
+
+  // reset PI controller integral for fresh movement
+  integralError = 0;
 
   speed = constrain(abs(speed), MOTOR_DEAD_ZONE, 255);
 
