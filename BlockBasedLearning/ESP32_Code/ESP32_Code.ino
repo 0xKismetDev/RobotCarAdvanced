@@ -70,7 +70,7 @@ long rightEncoderCount = 0;
 
 // forward declarations
 void sendAck(uint8_t num, bool success, int commandId = -1);
-void sendMovementComplete(bool timedOut);
+void sendMovementComplete(const String& reason);
 void checkMemoryHealth();
 
 // OLED debug display task — runs on core 0 to keep main loop responsive
@@ -621,12 +621,15 @@ void requestSensorData() {
       if (newMotorStatus.length() > 0 && newMotorStatus.length() < 20) {
         motorStatus = newMotorStatus;
 
-        // Detect movement completion transition
-        bool isComplete = (newMotorStatus == "DONE" || newMotorStatus == "TIMEOUT");
-        bool wasComplete = (lastMotorStatus == "DONE" || lastMotorStatus == "TIMEOUT");
+        // Detect movement completion transition (DONE, TIMEOUT, or STALL)
+        bool isComplete = (newMotorStatus == "DONE" || newMotorStatus == "TIMEOUT" || newMotorStatus == "STALL");
+        bool wasComplete = (lastMotorStatus == "DONE" || lastMotorStatus == "TIMEOUT" || lastMotorStatus == "STALL");
 
         if (isComplete && !wasComplete) {
-          sendMovementComplete(newMotorStatus == "TIMEOUT");
+          String reason = "done";
+          if (newMotorStatus == "TIMEOUT") reason = "timeout";
+          else if (newMotorStatus == "STALL") reason = "stall";
+          sendMovementComplete(reason);
         }
 
         lastMotorStatus = newMotorStatus;
@@ -652,20 +655,22 @@ void sendSensorData() {
   webSocket.broadcastTXT(json);
 }
 
-void sendMovementComplete(bool timedOut) {
+void sendMovementComplete(const String& reason) {
   if (!clientConnected) return;
 
   StaticJsonDocument<128> doc;
   doc["type"] = "movement_complete";
-  doc["success"] = !timedOut;
-  doc["reason"] = timedOut ? "timeout" : "done";
+  doc["success"] = (reason == "done");
+  doc["reason"] = reason;
   doc["timestamp"] = millis();
 
   String json;
   serializeJson(doc, json);
   webSocket.broadcastTXT(json);
 
-  Serial.println(timedOut ? "Event: movement_timeout" : "Event: movement_complete");
+  Serial.print("Event: movement_complete (reason: ");
+  Serial.print(reason);
+  Serial.println(")");
 }
 
 void sendStatus(uint8_t num) {
