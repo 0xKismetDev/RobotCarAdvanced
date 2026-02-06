@@ -379,14 +379,7 @@ void oledTask(void* parameter) {
   }
   vTaskDelay(pdMS_TO_TICKS(200));
 
-  // Phase 4: Subtitle fade-in
-  oled.setTextSize(1);
-  oled.setCursor(30, 38);
-  oled.print("Block Learning");
-  oled.display();
-  vTaskDelay(pdMS_TO_TICKS(300));
-
-  // Phase 5: Progress bar animation
+  // Phase 3: Progress bar animation
   oled.drawRect(14, 52, 100, 8, SSD1306_WHITE);
   oled.display();
   for (int w = 0; w < 96; w += 3) {
@@ -437,15 +430,11 @@ void oledTask(void* parameter) {
     oled.print("  R:");
     oled.print(rightEncoderCount);
 
-    // Row 4 (y=46..55): distance + battery voltage
+    // Row 4 (y=46..55): distance
     oled.setCursor(0, 46);
     oled.print("Dist:");
     oled.print(currentDistance);
-    oled.print("cm ");
-    if (currentBatteryVoltage > 0) {
-      oled.print(currentBatteryVoltage, 1);
-      oled.print("V");
-    }
+    oled.print("cm");
 
     // Row 5 (y=56..63): heap + Arduino connection icon at right edge
     oled.setCursor(0, 56);
