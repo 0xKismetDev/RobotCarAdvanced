@@ -59,10 +59,19 @@ volatile long rightEncoderCount = 0;
 volatile byte lastLeftState = HIGH;
 volatile byte lastRightState = HIGH;
 
+// Encoder debouncing — filters phantom pulses from vibration
+// 1500us is well below the minimum real pulse interval (5.7ms at 500 RPM)
+volatile unsigned long lastLeftPulseTime = 0;
+volatile unsigned long lastRightPulseTime = 0;
+const unsigned long ENCODER_DEBOUNCE_US = 1500;  // 1.5ms debounce window
+
 // movement timeout constants
 const unsigned long BASE_MOVEMENT_TIMEOUT = 3000;  // base timeout
 const unsigned long TIMEOUT_PER_PULSE = 100;       // add 100ms per pulse needed
 const unsigned long MAX_MOVEMENT_TIMEOUT = 15000;  // max 15 seconds
+
+// Stall detection — fires if motors running but no encoder progress
+const unsigned long STALL_TIMEOUT = 500;  // 500ms with no encoder change = stall
 
 // non-blocking movement state machine (replaces blocking while loops)
 enum MovementState : uint8_t {
@@ -85,9 +94,12 @@ struct MovementContext {
   int8_t leftDirection;   // +1 or -1
   int8_t rightDirection;  // +1 or -1
   bool timedOut;          // true if movement ended due to timeout
+  unsigned long lastEncoderChangeTime;  // millis() when encoder last incremented
+  long lastLeftCount;                   // encoder count at last stall check
+  long lastRightCount;
 };
 
-MovementContext movement = { MOVE_IDLE, 0, 0, 0, 0, 0, 0, 0, false, 1, 1, false };
+MovementContext movement = { MOVE_IDLE, 0, 0, 0, 0, 0, 0, 0, false, 1, 1, false, 0, 0, 0 };
 
 // PWM-change tracking: only call setMotors() when values differ
 int lastSetLeftPWM = 0;
@@ -188,19 +200,27 @@ void setupEncoderInterrupts() {
   Serial.println("encoder interrupts enabled");
 }
 
-// pin change interrupt service routine
+// pin change interrupt service routine (with debouncing)
 ISR(PCINT1_vect) {
+  unsigned long now = micros();  // call once, reuse — safe in AVR ISRs
+
   // read current states
   byte leftState = digitalRead(LEFT_ENCODER_PIN);
   byte rightState = digitalRead(RIGHT_ENCODER_PIN);
 
-  // detect rising edges (LOW to HIGH transitions)
+  // detect rising edges (LOW to HIGH transitions) with debounce filtering
   if (leftState == HIGH && lastLeftState == LOW) {
-    leftEncoderCount++;
+    if (now - lastLeftPulseTime >= ENCODER_DEBOUNCE_US) {
+      leftEncoderCount++;
+      lastLeftPulseTime = now;
+    }
   }
 
   if (rightState == HIGH && lastRightState == LOW) {
-    rightEncoderCount++;
+    if (now - lastRightPulseTime >= ENCODER_DEBOUNCE_US) {
+      rightEncoderCount++;
+      lastRightPulseTime = now;
+    }
   }
 
   // save states for next comparison
@@ -641,6 +661,11 @@ void startMoveDistance(int distanceMM, char direction, int speed) {
   movement.timeout = timeout;
   movement.isRotation = false;
 
+  // initialize stall tracking (grace period for motor spin-up)
+  movement.lastEncoderChangeTime = millis();
+  movement.lastLeftCount = 0;
+  movement.lastRightCount = 0;
+
   if (direction == 'F') {
     movement.leftDirection = 1;
     movement.rightDirection = 1;
@@ -702,6 +727,11 @@ void startRotateDegrees(int degrees, char direction, int speed) {
   movement.timeout = timeout;
   movement.isRotation = true;
 
+  // initialize stall tracking (grace period for motor spin-up)
+  movement.lastEncoderChangeTime = millis();
+  movement.lastLeftCount = 0;
+  movement.lastRightCount = 0;
+
   if (direction == 'L') {
     movement.leftDirection = -1;
     movement.rightDirection = 1;
@@ -759,6 +789,28 @@ void updateMovement() {
 
   switch (movement.state) {
     case MOVE_RUNNING: {
+      // Stall detection: if motors are powered but encoders show no progress
+      if (abs(leftCount) != movement.lastLeftCount || abs(rightCount) != movement.lastRightCount) {
+        // encoder changed — reset stall timer
+        movement.lastLeftCount = abs(leftCount);
+        movement.lastRightCount = abs(rightCount);
+        movement.lastEncoderChangeTime = now;
+      } else if (now - movement.lastEncoderChangeTime > STALL_TIMEOUT) {
+        // no encoder progress for STALL_TIMEOUT ms — wheel(s) blocked
+        stopMotors();
+        movement.timedOut = true;  // reuse flag for non-success path
+        movement.settlingStart = now;
+        movement.state = MOVE_SETTLING;
+        strcpy(motorStatusStr, "STALL");
+        Serial.print("STALL detected after ");
+        Serial.print(STALL_TIMEOUT);
+        Serial.print("ms! L=");
+        Serial.print(abs(leftCount));
+        Serial.print(" R=");
+        Serial.println(abs(rightCount));
+        return;
+      }
+
       // calculate progress: average for linear, max for rotation
       long progress = movement.isRotation
         ? max(abs(leftCount), abs(rightCount))
@@ -805,10 +857,17 @@ void updateMovement() {
       break;
 
     case MOVE_COMPLETE:
-      strcpy(motorStatusStr, movement.timedOut ? "TIMEOUT" : "DONE");
+      // STALL status was already set in MOVE_RUNNING — don't overwrite
+      if (strcmp(motorStatusStr, "STALL") != 0) {
+        strcpy(motorStatusStr, movement.timedOut ? "TIMEOUT" : "DONE");
+      }
       movement.state = MOVE_IDLE;
       Serial.print("movement ");
-      Serial.println(movement.timedOut ? "timeout" : "done");
+      if (strcmp(motorStatusStr, "STALL") == 0) {
+        Serial.println("stall");
+      } else {
+        Serial.println(movement.timedOut ? "timeout" : "done");
+      }
       break;
 
     default:
