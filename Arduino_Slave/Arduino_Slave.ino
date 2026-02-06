@@ -33,8 +33,10 @@ const float WHEELBASE = 145.0;  // mm center-to-center distance
 // previous values (1.05 / 0.90) were backwards and caused right motor starvation
 
 // turn calibration - compensates for wheel slippage during rotation
-// increase if turns are too shallow, decrease if turns are too far
-const float TURN_CALIBRATION_FACTOR = 1.08;  // 8% more rotation to account for slippage
+// slippage accumulates with turn angle, so calibration scales per-degree
+// at 180°: 1.00 + 0.000222*180 = 1.04, at 360°: 1.00 + 0.000222*360 = 1.08
+const float TURN_CAL_BASE = 1.00;
+const float TURN_CAL_PER_DEG = 0.000222;
 
 // L298N dead zone - PWM below this won't turn the motor, just buzzes
 // MEASURE EMPIRICALLY: ramp PWM from 30 up until each motor shaft turns
@@ -43,11 +45,11 @@ const int MOTOR_DEAD_ZONE = 75;
 
 // Feedforward: static boost for weaker right motor (applied in setMotors)
 // Tune empirically: increase if car still drifts right, decrease if it drifts left
-const int RIGHT_MOTOR_BOOST = 15;
+const int RIGHT_MOTOR_BOOST = 12;
 
 // Feedback: PI-controller for fine-tuning straight-line driving
-const int ENCODER_DEAD_BAND = 1;   // Don't correct small differences (pulses)
-const int KP = 8;                    // Proportional gain (moderate — feedforward handles gross imbalance)
+const int ENCODER_DEAD_BAND = 0;   // Correct immediately on any pulse difference
+const int KP = 10;                   // Proportional gain (aggressive — 21 PPR needs fast response)
 const int KI = 2;                    // Integral gain (conservative — corrects persistent drift)
 const int MAX_INTEGRAL = 30;         // Anti-windup clamp (max integral contribution = KI*MAX_INTEGRAL = 60 PWM)
 int integralError = 0;               // Accumulated error (reset each movement)
@@ -760,7 +762,8 @@ void startRotateDegrees(int degrees, char direction, int speed) {
   movement.timedOut = false;
 
   float arcLength = (PI * WHEELBASE * abs(degrees)) / 360.0;
-  long pulsesNeeded = (arcLength / MM_PER_PULSE) * TURN_CALIBRATION_FACTOR;
+  float calibration = TURN_CAL_BASE + TURN_CAL_PER_DEG * abs(degrees);
+  long pulsesNeeded = (arcLength / MM_PER_PULSE) * calibration;
   if (pulsesNeeded == 0) return;  // nothing to do
 
   // reset encoders atomically

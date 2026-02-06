@@ -12,7 +12,8 @@ function defineRobotBlocks() {
                 .appendField(new Blockly.FieldDropdown([
                     ["langsam (100)", "100"],
                     ["mittel (150)", "150"],
-                    ["schnell (200)", "200"]
+                    ["schnell (200)", "200"],
+                    ["overdrive (255)", "255"]
                 ]), "SPEED");
             this.setPreviousStatement(true, null);
             this.setNextStatement(true, null);
@@ -31,7 +32,8 @@ function defineRobotBlocks() {
                 .appendField(new Blockly.FieldDropdown([
                     ["langsam (100)", "100"],
                     ["mittel (150)", "150"],
-                    ["schnell (200)", "200"]
+                    ["schnell (200)", "200"],
+                    ["overdrive (255)", "255"]
                 ]), "SPEED");
             this.setPreviousStatement(true, null);
             this.setNextStatement(true, null);
@@ -134,23 +136,6 @@ function defineRobotBlocks() {
         }
     };
 
-    Blockly.Blocks['robot_calibrate_turns'] = {
-        init: function() {
-            this.appendDummyInput()
-                .appendField("🎯 Test: Kalibrierung prüfen")
-                .appendField("Geschw.")
-                .appendField(new Blockly.FieldDropdown([
-                    ["100", "100"],
-                    ["150", "150"],
-                    ["200", "200"]
-                ]), "SPEED");
-            this.setPreviousStatement(true, null);
-            this.setNextStatement(true, null);
-            this.setColour(290);
-            this.setTooltip("NUR ZUM TESTEN: Dreht 90° und zeigt ob Kalibrierung stimmt. Ändert keine Werte.");
-            this.setHelpUrl("");
-        }
-    };
 
     Blockly.Blocks['robot_if_obstacle'] = {
         init: function() {
@@ -377,10 +362,6 @@ function defineRobotGenerators() {
         return 'await turnToClearDirection();\n';
     };
 
-    window.RobotGenerators['robot_calibrate_turns'] = function(block) {
-        const speed = block.getFieldValue('SPEED');
-        return 'await calibrateTurning(' + speed + ');\n';
-    };
 }
 
 window.generateRobotCode = function(workspace) {

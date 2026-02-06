@@ -63,14 +63,6 @@ function initBlockly() {
             },
             {
                 "kind": "category",
-                "name": "🔧 Kalibrierung",
-                "colour": "290",
-                "contents": [
-                    {"kind": "block", "type": "robot_calibrate_turns"}
-                ]
-            },
-            {
-                "kind": "category",
                 "name": "📝 Ausgabe",
                 "colour": "160",
                 "contents": [
@@ -969,46 +961,6 @@ async function turnToClearDirection() {
     }
 }
 
-// calibration routine for precise turning
-async function calibrateTurning(testSpeed = 150) {
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-        addToConsole('Nicht mit Roboter verbunden!', 'error');
-        return;
-    }
-
-    addToConsole('=== 🎯 DREHKALIBRIERUNG START ===', 'success');
-    addToConsole('1. Platziere den Roboter auf einer ebenen Fläche');
-    addToConsole('2. Markiere die Startposition (z.B. mit Klebeband)');
-    addToConsole('3. Beobachte die tatsächlichen Drehwinkel');
-    await wait(3000);
-
-    const testAngles = [90, 180, 360];
-
-    for (let targetAngle of testAngles) {
-        addToConsole(`\n📐 Test: ${targetAngle}° Drehung bei Geschwindigkeit ${testSpeed}`);
-        addToConsole('Beobachte die tatsächliche Drehung...');
-        await wait(2000);
-
-        // perform test turn
-        await turnDegrees('right', targetAngle, testSpeed);
-        await wait(1000);
-
-        addToConsole(`Ziel: ${targetAngle}° - Notiere die tatsächliche Drehung`);
-        addToConsole('Der Roboter kehrt zur Startposition zurück in 5 Sekunden...');
-        await wait(5000);
-
-        // return to start position for next test
-        await turnDegrees('left', targetAngle, testSpeed);
-        await wait(2000);
-    }
-
-    addToConsole('\n=== ✅ KALIBRIERUNG ABGESCHLOSSEN ===', 'success');
-    addToConsole('📝 Kalibrierungshinweise:');
-    addToConsole('- Dreht zu weit: Verringere ms/degree Wert');
-    addToConsole('- Dreht zu wenig: Erhöhe ms/degree Wert');
-    addToConsole('- Passe die Werte in TURN_CALIBRATION an (Zeile 494-499)');
-    addToConsole('- Aktuelle Werte: 100->3.5ms, 150->2.3ms, 200->1.7ms, 255->1.4ms');
-}
 
 function print(text) {
     addToConsole(`💬 ${text}`, 'info');
