@@ -52,6 +52,15 @@ const int KI = 2;                    // Integral gain (conservative — corrects
 const int MAX_INTEGRAL = 30;         // Anti-windup clamp (max integral contribution = KI*MAX_INTEGRAL = 60 PWM)
 int integralError = 0;               // Accumulated error (reset each movement)
 
+// Battery voltage monitoring
+#define BATTERY_PIN A3
+const float VOLTAGE_DIVIDER_RATIO = 2.0;  // R1=R2=10K -> ratio = 2.0
+const float BATTERY_NOMINAL = 7.4;        // nominal 2S LiPo voltage
+const unsigned long BATTERY_READ_INTERVAL = 2000;  // read every 2 seconds
+
+float currentBatteryVoltage = BATTERY_NOMINAL;  // assume nominal until measured
+float voltageCompensationFactor = 1.0;
+
 // Adaptive speed reduction near movement target
 const int MIN_MOVEMENT_SPEED = MOTOR_DEAD_ZONE + 20;  // 95 PWM minimum during deceleration
 const int DECEL_THRESHOLD_PULSES = 3;  // Start decelerating within this many pulses of target
@@ -124,8 +133,8 @@ int cmdIndex = 0;
 bool newCmd = false;
 
 // Pre-formatted I2C response buffer (written in loop, read in ISR)
-char responseBuffer[32] = "0,0,0,STOPPED\n";
-volatile uint8_t responseLen = 14;
+char responseBuffer[32] = "0,0,0,STOPPED,7400\n";
+volatile uint8_t responseLen = 19;
 
 unsigned long lastSensorRead = 0;
 const int SENSOR_INTERVAL = 100;      // 100ms
@@ -133,6 +142,34 @@ const int SENSOR_INTERVAL = 100;      // 100ms
 // forward declarations
 void readDistance(bool force = false);
 void performScan();
+
+void readBatteryVoltage() {
+  static unsigned long lastRead = 0;
+  if (millis() - lastRead < BATTERY_READ_INTERVAL) return;
+  lastRead = millis();
+
+  // Average 10 readings for stability
+  long sum = 0;
+  for (int i = 0; i < 10; i++) {
+    sum += analogRead(BATTERY_PIN);
+  }
+  float adcAverage = sum / 10.0;
+
+  // Convert to actual voltage
+  float measuredVoltage = (adcAverage / 1023.0) * 5.0 * VOLTAGE_DIVIDER_RATIO;
+
+  // If reading is < 1V, assume no voltage divider connected — disable compensation
+  if (measuredVoltage < 1.0) {
+    voltageCompensationFactor = 1.0;
+    return;
+  }
+
+  currentBatteryVoltage = measuredVoltage;
+
+  // Scale PWM up as voltage drops. At nominal (7.4V) = 1.0. Clamp to [1.0, 1.5].
+  voltageCompensationFactor = BATTERY_NOMINAL / max(measuredVoltage, 6.0f);
+  voltageCompensationFactor = constrain(voltageCompensationFactor, 1.0f, 1.5f);
+}
 
 void setup() {
   Serial.begin(115200);
@@ -239,8 +276,9 @@ void updateResponseBuffer() {
   long rightEnc = rightEncoderCount;
   sei();
 
-  int len = snprintf(temp, sizeof(temp), "%d,%ld,%ld,%s\n",
-                     distance, leftEnc, rightEnc, motorStatusStr);
+  int battMV = (int)(currentBatteryVoltage * 1000);
+  int len = snprintf(temp, sizeof(temp), "%d,%ld,%ld,%s,%d\n",
+                     distance, leftEnc, rightEnc, motorStatusStr, battMV);
   if (len >= (int)sizeof(temp)) {
     len = sizeof(temp) - 1;
   }
@@ -268,6 +306,7 @@ void loop() {
 
   // Keep sensor data and response buffer current
   readDistance();
+  readBatteryVoltage();
   updateResponseBuffer();
 
   // detach servo after timeout to prevent twitching and save power
@@ -485,9 +524,14 @@ void setMotors(int left, int right) {
     digitalWrite(IN4, LOW);
   }
 
+  // Apply battery voltage compensation to PWM values
+  // Unlike RIGHT_MOTOR_BOOST, this applies universally to ALL motor commands
+  int compensatedLeft = constrain((int)(abs(calibratedLeft) * voltageCompensationFactor), 0, 255);
+  int compensatedRight = constrain((int)(abs(calibratedRight) * voltageCompensationFactor), 0, 255);
+
   // Now apply PWM after directions are set
-  analogWrite(ENA, abs(calibratedLeft));
-  analogWrite(ENB, abs(calibratedRight));
+  analogWrite(ENA, compensatedLeft);
+  analogWrite(ENB, compensatedRight);
 }
 
 void stopMotors() {
