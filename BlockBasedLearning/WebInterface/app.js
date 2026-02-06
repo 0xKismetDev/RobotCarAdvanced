@@ -22,6 +22,7 @@ let connectionLost = false;
 let commandQueue = [];
 let pendingCommands = new Map();
 let commandId = 0;
+let movementCompleteResolver = null;
 
 function initBlockly() {
     const toolbox = {
@@ -329,6 +330,16 @@ function handleWebSocketMessage(data) {
             ws.send(JSON.stringify({ type: 'pong', ts: Date.now() }));
         }
         return; // handled
+    }
+
+    if (data.type === 'movement_complete') {
+        lastHeartbeat = Date.now();  // counts as server activity
+        if (movementCompleteResolver) {
+            movementCompleteResolver(data);
+        }
+        const status = data.success ? 'abgeschlossen' : 'Timeout';
+        addToConsole(`Bewegung ${status}`, data.success ? 'success' : 'warning');
+        return;
     }
 
     if (data.type === 'sensor_data') {
@@ -646,6 +657,8 @@ async function moveDistance(distance, direction, speed) {
         throw new Error('Nicht verbunden');
     }
 
+    cancelPendingMovement();
+
     const command = {
         type: 'command',
         action: 'moveDistance',
@@ -665,6 +678,8 @@ async function turnPrecise(degrees, direction, speed) {
         throw new Error('Nicht verbunden');
     }
 
+    cancelPendingMovement();
+
     const command = {
         type: 'command',
         action: 'rotateDegrees',
@@ -678,25 +693,39 @@ async function turnPrecise(degrees, direction, speed) {
     addToConsole(`🎯 Drehe ${Math.abs(degrees)}° ${directionText} mit Geschw. ${speed}`);
 }
 
-// Wait for Arduino to report movement completion via motor_status in sensor broadcasts.
-// Two-phase: first confirm movement STARTED (non-STOPPED), then wait for COMPLETION (STOPPED).
-// This prevents returning on stale STOPPED status from before the command was processed.
+// Wait for movement_complete WebSocket event from ESP32.
+// Replaces polling-based detection with event-driven completion.
+// The timeout parameter is a client-side safety net only.
 async function waitForMovementComplete(timeout) {
-    const startTime = Date.now();
-    let sawMoving = false;
+    return new Promise((resolve) => {
+        const timer = setTimeout(() => {
+            movementCompleteResolver = null;
+            addToConsole('Warte-Timeout (Client)', 'warning');
+            resolve(false);
+        }, timeout);
 
-    while (Date.now() - startTime < timeout) {
-        if (currentMotorStatus !== 'STOPPED') {
-            sawMoving = true;
-        }
-        // Only accept STOPPED after we've confirmed movement actually started
-        if (sawMoving && currentMotorStatus === 'STOPPED') {
-            return true;
-        }
-        if (window.stopRequested) return false;
-        await wait(50);
+        const stopCheck = setInterval(() => {
+            if (window.stopRequested) {
+                clearTimeout(timer);
+                clearInterval(stopCheck);
+                movementCompleteResolver = null;
+                resolve(false);
+            }
+        }, 100);
+
+        movementCompleteResolver = (data) => {
+            clearTimeout(timer);
+            clearInterval(stopCheck);
+            movementCompleteResolver = null;
+            resolve(data.success !== false);
+        };
+    });
+}
+
+function cancelPendingMovement() {
+    if (movementCompleteResolver) {
+        movementCompleteResolver({ success: false, reason: 'cancelled' });
     }
-    return false;  // timed out
 }
 
 async function resetEncoders() {
@@ -1073,6 +1102,7 @@ async function runCode() {
 async function stopCode() {
     window.stopRequested = true;
     isExecutingCode = false;
+    cancelPendingMovement();
 
     // immediate stop
     const emergencyStop = {
