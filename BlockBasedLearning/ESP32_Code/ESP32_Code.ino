@@ -364,29 +364,7 @@ void oledTask(void* parameter) {
   oled.display();
   vTaskDelay(pdMS_TO_TICKS(100));
 
-  // Phase 2: Animated wheel spin (4 frames)
-  const char* wheelFrames[] = { "|", "/", "-", "\\" };
-  for (int cycle = 0; cycle < 3; cycle++) {
-    for (int f = 0; f < 4; f++) {
-      oled.fillRect(10, 24, 16, 16, SSD1306_BLACK);
-      oled.fillRect(102, 24, 16, 16, SSD1306_BLACK);
-      // Left wheel
-      oled.setCursor(14, 28);
-      oled.setTextSize(1);
-      oled.setTextColor(SSD1306_WHITE);
-      oled.print(wheelFrames[f]);
-      // Right wheel
-      oled.setCursor(106, 28);
-      oled.print(wheelFrames[f]);
-      // Draw wheel circles
-      oled.drawCircle(16, 31, 8, SSD1306_WHITE);
-      oled.drawCircle(108, 31, 8, SSD1306_WHITE);
-      oled.display();
-      vTaskDelay(pdMS_TO_TICKS(80));
-    }
-  }
-
-  // Phase 3: Title reveal — "BKTM Car" letter by letter
+  // Phase 2: Title reveal — "BKTM Car" letter by letter
   const char* title = "BKTM Car";
   int titleLen = 8;
   int titleX = (128 - titleLen * 12) / 2;  // center for size 2
