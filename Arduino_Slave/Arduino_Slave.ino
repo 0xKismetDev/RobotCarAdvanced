@@ -84,9 +84,10 @@ struct MovementContext {
   bool isRotation;
   int8_t leftDirection;   // +1 or -1
   int8_t rightDirection;  // +1 or -1
+  bool timedOut;          // true if movement ended due to timeout
 };
 
-MovementContext movement = { MOVE_IDLE, 0, 0, 0, 0, 0, 0, 0, false, 1, 1 };
+MovementContext movement = { MOVE_IDLE, 0, 0, 0, 0, 0, 0, 0, false, 1, 1, false };
 
 // PWM-change tracking: only call setMotors() when values differ
 int lastSetLeftPWM = 0;
@@ -616,6 +617,7 @@ void startMoveDistance(int distanceMM, char direction, int speed) {
   // cancel any in-progress movement
   stopMotors();
   movement.state = MOVE_IDLE;
+  movement.timedOut = false;
 
   long pulsesNeeded = abs(distanceMM) / MM_PER_PULSE;
   if (pulsesNeeded == 0) return;  // nothing to do
@@ -675,6 +677,7 @@ void startRotateDegrees(int degrees, char direction, int speed) {
   // cancel any in-progress movement
   stopMotors();
   movement.state = MOVE_IDLE;
+  movement.timedOut = false;
 
   float arcLength = (PI * WHEELBASE * abs(degrees)) / 360.0;
   long pulsesNeeded = (arcLength / MM_PER_PULSE) * TURN_CALIBRATION_FACTOR;
@@ -745,6 +748,7 @@ void updateMovement() {
   // timeout check applies to all active states
   if (now - movement.startTime > movement.timeout) {
     stopMotors();
+    movement.timedOut = true;
     movement.settlingStart = now;
     movement.state = MOVE_SETTLING;
     Serial.print("movement timeout after ");
@@ -765,6 +769,7 @@ void updateMovement() {
       if (remaining <= 0) {
         // target reached - stop motors and enter settling
         stopMotors();
+        movement.timedOut = false;
         movement.settlingStart = now;
         movement.state = MOVE_SETTLING;
         Serial.print("movement complete: L=");
@@ -800,9 +805,10 @@ void updateMovement() {
       break;
 
     case MOVE_COMPLETE:
-      strcpy(motorStatusStr, "STOPPED");
+      strcpy(motorStatusStr, movement.timedOut ? "TIMEOUT" : "DONE");
       movement.state = MOVE_IDLE;
-      Serial.println("movement done");
+      Serial.print("movement ");
+      Serial.println(movement.timedOut ? "timeout" : "done");
       break;
 
     default:
