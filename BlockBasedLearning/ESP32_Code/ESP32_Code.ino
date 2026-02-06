@@ -1,13 +1,23 @@
 // esp32 robot car blockly controller
 // websocket server for block-based programming
-// Phase 2 reliability improvements - critical fixes
+// Phase 3 completion signaling + OLED debug display
 
 #include <WiFi.h>
 #include <WebSocketsServer.h>
 #include <ArduinoJson.h>
 #include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
 #include "esp_wifi.h"  // for disabling power save
 #include "esp_task_wdt.h"  // watchdog timer
+
+// OLED display on separate I2C bus (Wire1)
+#define OLED_SDA 16
+#define OLED_SCL 17
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+Adafruit_SSD1306 oled(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire1, OLED_RESET);
 
 // wifi configuration
 const char* AP_SSID = "RobotCar-Blockly";
@@ -63,10 +73,71 @@ void sendAck(uint8_t num, bool success, int commandId = -1);
 void sendMovementComplete(bool timedOut);
 void checkMemoryHealth();
 
+// OLED debug display task — runs on core 0 to keep main loop responsive
+void oledTask(void* parameter) {
+  Wire1.begin(OLED_SDA, OLED_SCL);
+  Wire1.setClock(400000);  // 400kHz for OLED
+
+  if (!oled.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println("OLED: init failed!");
+    vTaskDelete(NULL);
+    return;
+  }
+
+  oled.clearDisplay();
+  oled.setTextSize(1);
+  oled.setTextColor(SSD1306_WHITE);
+  oled.setCursor(0, 0);
+  oled.println("RobotCar");
+  oled.println("Starting...");
+  oled.display();
+  Serial.println("OLED: OK on Wire1 (GPIO16/17)");
+
+  for (;;) {
+    oled.clearDisplay();
+    oled.setTextSize(1);
+    oled.setTextColor(SSD1306_WHITE);
+
+    // Row 1: title + WiFi status
+    oled.setCursor(0, 0);
+    oled.print("RobotCar ");
+    oled.print(clientConnected ? "[CONN]" : "[----]");
+
+    // Row 2: motor status (larger text)
+    oled.setTextSize(2);
+    oled.setCursor(0, 12);
+    oled.print(motorStatus);
+
+    // Row 3: encoder counts
+    oled.setTextSize(1);
+    oled.setCursor(0, 32);
+    oled.print("L:");
+    oled.print(leftEncoderCount);
+    oled.print("  R:");
+    oled.print(rightEncoderCount);
+
+    // Row 4: ultrasonic distance
+    oled.setCursor(0, 44);
+    oled.print("Dist: ");
+    oled.print(currentDistance);
+    oled.print("cm");
+
+    // Row 5: heap + arduino status
+    oled.setCursor(0, 56);
+    oled.print("Heap:");
+    oled.print(ESP.getFreeHeap() / 1024);
+    oled.print("K Ard:");
+    oled.print(arduinoConnected ? "OK" : "NO");
+
+    oled.display();
+    vTaskDelay(pdMS_TO_TICKS(200));  // 5Hz refresh
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   Serial.println("\n=== Blockly Robot Car ESP32 Starting ===");
-  Serial.println("Phase 2 Critical Fixes Active");
+  Serial.println("Phase 3 + OLED Debug Active");
 
   // setup watchdog timer - ESP32 Arduino 3.x API
   esp_task_wdt_config_t wdt_config = {
@@ -106,12 +177,23 @@ void setup() {
   // check arduino connection
   checkArduino();
 
+  // start OLED debug display on core 0
+  xTaskCreatePinnedToCore(
+    oledTask,   // function
+    "OLED",     // name
+    4096,       // stack size (bytes)
+    NULL,       // parameters
+    1,          // priority (low — display is non-critical)
+    NULL,       // task handle
+    0           // core 0 (keeps main loop on core 1)
+  );
+
   Serial.println("\n=== Ready for Blockly Programming! ===");
   Serial.printf("WiFi Network: %s\n", AP_SSID);
   Serial.printf("Password: %s\n", AP_PASSWORD);
   Serial.printf("IP Address: %s\n", WiFi.softAPIP().toString().c_str());
   Serial.printf("WebSocket: ws://%s:81\n", WiFi.softAPIP().toString().c_str());
-  Serial.println("Reliability features: power_save=OFF, heartbeat=ON");
+  Serial.println("Reliability features: power_save=OFF, heartbeat=ON, OLED=ON");
   Serial.println("=====================================");
 }
 
