@@ -54,11 +54,13 @@ int currentDistance = 0;
 int currentServo = 90;
 int batteryPercent = 100;
 String motorStatus = "STOPPED";
+String lastMotorStatus = "STOPPED";
 long leftEncoderCount = 0;
 long rightEncoderCount = 0;
 
 // forward declarations
 void sendAck(uint8_t num, bool success, int commandId = -1);
+void sendMovementComplete(bool timedOut);
 void checkMemoryHealth();
 
 void setup() {
@@ -536,6 +538,16 @@ void requestSensorData() {
       rightEncoderCount = newRightEncoder;
       if (newMotorStatus.length() > 0 && newMotorStatus.length() < 20) {
         motorStatus = newMotorStatus;
+
+        // Detect movement completion transition
+        bool isComplete = (newMotorStatus == "DONE" || newMotorStatus == "TIMEOUT");
+        bool wasComplete = (lastMotorStatus == "DONE" || lastMotorStatus == "TIMEOUT");
+
+        if (isComplete && !wasComplete) {
+          sendMovementComplete(newMotorStatus == "TIMEOUT");
+        }
+
+        lastMotorStatus = newMotorStatus;
       }
     }
   }
@@ -556,6 +568,22 @@ void sendSensorData() {
   String json;
   serializeJson(doc, json);
   webSocket.broadcastTXT(json);
+}
+
+void sendMovementComplete(bool timedOut) {
+  if (!clientConnected) return;
+
+  StaticJsonDocument<128> doc;
+  doc["type"] = "movement_complete";
+  doc["success"] = !timedOut;
+  doc["reason"] = timedOut ? "timeout" : "done";
+  doc["timestamp"] = millis();
+
+  String json;
+  serializeJson(doc, json);
+  webSocket.broadcastTXT(json);
+
+  Serial.println(timedOut ? "Event: movement_timeout" : "Event: movement_complete");
 }
 
 void sendStatus(uint8_t num) {
